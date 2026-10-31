@@ -16,6 +16,8 @@ public:
     void OnFolderEmptyCmd(UINT msg);
     // 整理会话中桌面出现变化（已防抖）：只 park 新出现的非应用并刷新列表
     void OnDesktopChanged();
+    // 监视线程意外退出：同步状态、重试一次，仍失败则提示用户
+    void OnWatchEnded();
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -27,5 +29,8 @@ private:
     bool listsVisible_ = false;
     // 是否处于整理会话（监视中）。不用 session.flag：桌面本就为空时 flag 会被清掉
     bool organized_ = false;
+    // 监视线程是否在运行；监视失败时 organized_ 仍为 true（列表照常显示，可手动刷新）
+    bool watching_ = false;
+    bool watchRetried_ = false;  // 本次整理会话是否已自动重试过监视
     UINT taskbarCreatedMsg_ = 0;
 };

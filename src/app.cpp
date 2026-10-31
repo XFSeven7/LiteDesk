@@ -15,6 +15,8 @@ namespace {
 const wchar_t kMainClass[] = L"LiteDeskMain";
 // 监视线程 → UI 线程的变化通知；UI 侧用定时器合并 300ms 内的连续事件
 constexpr UINT WM_DESKTOP_CHANGED = WM_APP + 20;
+// 监视线程意外退出通知
+constexpr UINT WM_WATCH_ENDED = WM_APP + 21;
 constexpr UINT_PTR kDebounceTimer = 1;
 constexpr UINT kDebounceMs = 300;
 }
@@ -57,6 +59,7 @@ void App::Shutdown() {
     if (hwnd_) KillTimer(hwnd_, kDebounceTimer);
     Watcher_Stop();
     organized_ = false;
+    watching_ = false;
     // 正常退出也还原桌面；失败项留在 manifest，下次启动自动重试
     if (NeedsCrashRecovery()) RestoreAll();
     if (hwnd_) Tray_Remove(hwnd_);
@@ -77,14 +80,37 @@ void App::RefreshListsFromManifest() {
 }
 
 void App::Organize() {
+    // 先清掉旧会话残留的防抖定时器，避免重启监视后误触发
+    KillTimer(hwnd_, kDebounceTimer);
     const std::wstring desk = GetDesktopPath();
     ParkResult r = ParkNonApps(desk, ScanDesktop(desk));
     RefreshListsFromManifest();
     FloatLists_Show(&fl_, true);
     listsVisible_ = true;
     if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目整理失败，详情见日志");
-    // 进入整理会话：开始监视桌面（重复整理时 Start 会先停旧线程）
-    organized_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED);
+    // 进入整理会话：列表已显示即视为已整理；监视是否成功单独记录（重复整理时 Start 会先停旧线程）
+    organized_ = true;
+    watchRetried_ = false;
+    watching_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
+    if (!watching_) {
+        LogError(L"桌面监视不可用，自动收纳已停用");
+        Tray_Balloon(hwnd_, L"LiteDesk", L"桌面监视启动失败，新文件不会自动收纳；可在列表空白处右键「刷新」");
+    }
+}
+
+void App::OnWatchEnded() {
+    if (!organized_) return;  // 已还原/退出：旧线程遗留的通知，忽略
+    watching_ = false;
+    LogError(L"桌面监视线程意外退出");
+    if (!watchRetried_) {
+        watchRetried_ = true;
+        watching_ = Watcher_Start(GetDesktopPath(), hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
+        if (watching_) {
+            OnDesktopChanged();  // 断档期间可能漏事件，补扫一次
+            return;
+        }
+    }
+    Tray_Balloon(hwnd_, L"LiteDesk", L"桌面监视已中断，新文件不会自动收纳；可在列表空白处右键「刷新」");
 }
 
 void App::OnDesktopChanged() {
@@ -104,6 +130,7 @@ void App::Restore() {
     KillTimer(hwnd_, kDebounceTimer);
     Watcher_Stop();
     organized_ = false;
+    watching_ = false;
     ParkResult r = RestoreAll();
     RefreshListsFromManifest();  // 失败项仍留在 manifest，列表保持可见
     if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目还原失败，详情见日志");
@@ -146,6 +173,9 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESKTOP_CHANGED:
         SetTimer(hwnd, kDebounceTimer, kDebounceMs, nullptr);  // 重置即防抖
+        return 0;
+    case WM_WATCH_ENDED:
+        app->OnWatchEnded();
         return 0;
     case WM_TIMER:
         if (wp == kDebounceTimer) {

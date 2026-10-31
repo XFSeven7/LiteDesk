@@ -10,12 +10,14 @@ struct Ctx {
     HANDLE dir;
     HWND hwnd;
     UINT msg;
+    UINT endMsg;  // 非主动停止而退出时通知 UI
 };
 
 DWORD WINAPI WatchProc(LPVOID p) {
     Ctx* c = static_cast<Ctx*>(p);
     alignas(DWORD) BYTE buf[16 * 1024];
     HANDLE ioEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool stopped = false;  // 是否因主动停止而退出
     if (ioEvent) {
         for (;;) {
             OVERLAPPED ov{};
@@ -31,6 +33,7 @@ DWORD WINAPI WatchProc(LPVOID p) {
                 // 收到退出信号：取消挂起的 IO 并等其完成，避免 ov 出栈后内核仍写入
                 CancelIo(c->dir);
                 GetOverlappedResult(c->dir, &ov, &bytes, TRUE);
+                stopped = true;
                 break;
             }
             if (!GetOverlappedResult(c->dir, &ov, &bytes, FALSE)) break;
@@ -39,13 +42,15 @@ DWORD WINAPI WatchProc(LPVOID p) {
         }
         CloseHandle(ioEvent);
     }
+    // 意外退出（IO 失败或事件创建失败）：通知 UI 同步状态
+    if (!stopped) PostMessageW(c->hwnd, c->endMsg, 0, 0);
     CloseHandle(c->dir);
     delete c;
     return 0;
 }
 }  // namespace
 
-bool Watcher_Start(const std::wstring& dir, HWND notifyHwnd, UINT msg) {
+bool Watcher_Start(const std::wstring& dir, HWND notifyHwnd, UINT msg, UINT endMsg) {
     Watcher_Stop();
     HANDLE h = CreateFileW(dir.c_str(), FILE_LIST_DIRECTORY,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -55,7 +60,7 @@ bool Watcher_Start(const std::wstring& dir, HWND notifyHwnd, UINT msg) {
         return false;
     }
     g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    Ctx* c = new Ctx{h, notifyHwnd, msg};
+    Ctx* c = new Ctx{h, notifyHwnd, msg, endMsg};
     g_thread = g_stopEvent ? CreateThread(nullptr, 0, WatchProc, c, 0, nullptr) : nullptr;
     if (!g_thread) {
         CloseHandle(h);
