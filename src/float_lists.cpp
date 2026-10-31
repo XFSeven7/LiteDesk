@@ -33,9 +33,9 @@ IContextMenu2* g_cm2 = nullptr;
 HIMAGELIST g_sysImages = nullptr;  // 系统图标表（大图标，勿 Destroy）
 HFONT g_listFont = nullptr;
 
-int g_splitX = 364;          // 原 280 × 1.3
+int g_splitX = 336;          // 原 280 × 1.2
 bool g_draggingSplit = false;
-int g_defX = 80, g_defY = 80, g_defW = 728, g_defH = 624;  // 原 560×480 × 1.3
+int g_defX = 80, g_defY = 80, g_defW = 672, g_defH = 576;  // 原 560×480 × 1.2
 bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D 收起）
 bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
 constexpr UINT_PTR kKeepAliveTimer = 42;
@@ -52,10 +52,10 @@ constexpr int kDragH = 16;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
 
 HFONT MakeListFont(HWND) {
-    // 系统默认消息字体 × 1.3（一般约 9pt → ~12pt）
+    // 系统默认消息字体 × 1.2
     NONCLIENTMETRICSW ncm{sizeof(ncm)};
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-    ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, 13, 10);
+    ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, 6, 5);
     ncm.lfMessageFont.lfQuality = CLEARTYPE_QUALITY;
     return CreateFontIndirectW(&ncm.lfMessageFont);
 }
