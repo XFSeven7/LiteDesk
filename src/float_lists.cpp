@@ -42,6 +42,8 @@ constexpr COLORREF kTextColor = RGB(255, 255, 255);
 constexpr int kSnapPx = 16;
 constexpr int kSplitW = 5;
 constexpr int kMinPane = 80;
+constexpr int kDragH = 12;   // 无标题栏：顶部拖动条高度
+constexpr int kEdge = 6;     // 边缘缩放热区
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -170,24 +172,24 @@ void LayoutPanes(HWND hwnd) {
     GetClientRect(hwnd, &rc);
     const int cw = rc.right - rc.left;
     const int ch = rc.bottom - rc.top;
-    if (cw < kMinPane * 2 + kSplitW) return;
+    const int listH = ch - kDragH;
+    if (cw < kMinPane * 2 + kSplitW || listH < 40) return;
     if (g_splitX < kMinPane) g_splitX = kMinPane;
     if (g_splitX > cw - kMinPane - kSplitW) g_splitX = cw - kMinPane - kSplitW;
 
     if (g_folder.list)
-        MoveWindow(g_folder.list, 0, 0, g_splitX, ch, TRUE);
+        MoveWindow(g_folder.list, 0, kDragH, g_splitX, listH, TRUE);
     if (g_file.list)
-        MoveWindow(g_file.list, g_splitX + kSplitW, 0, cw - g_splitX - kSplitW, ch, TRUE);
+        MoveWindow(g_file.list, g_splitX + kSplitW, kDragH, cw - g_splitX - kSplitW, listH, TRUE);
     if (g_folder.list) ListView_SetColumnWidth(g_folder.list, 0, LVSCW_AUTOSIZE_USEHEADER);
     if (g_file.list) ListView_SetColumnWidth(g_file.list, 0, LVSCW_AUTOSIZE_USEHEADER);
-    // 分割条区域由 WM_ERASEBKGND / WM_PAINT 画
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
-bool HitSplitter(HWND hwnd, int x) {
+bool HitSplitter(HWND hwnd, int x, int y) {
     RECT rc{};
     GetClientRect(hwnd, &rc);
-    return x >= g_splitX && x < g_splitX + kSplitW;
+    return y >= kDragH && x >= g_splitX && x < g_splitX + kSplitW;
 }
 
 HWND CreateList(HINSTANCE inst, HWND parent) {
@@ -270,12 +272,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);
         return 0;
+    case WM_NCHITTEST: {
+        // 无系统标题栏：顶条拖动，四边缩放
+        POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+        POINT client = pt;
+        ScreenToClient(hwnd, &client);
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        const bool l = client.x < kEdge;
+        const bool r = client.x >= rc.right - kEdge;
+        const bool t = client.y < kEdge;
+        const bool b = client.y >= rc.bottom - kEdge;
+        if (t && l) return HTTOPLEFT;
+        if (t && r) return HTTOPRIGHT;
+        if (b && l) return HTBOTTOMLEFT;
+        if (b && r) return HTBOTTOMRIGHT;
+        if (l) return HTLEFT;
+        if (r) return HTRIGHT;
+        if (b) return HTBOTTOM;
+        if (t) return HTTOP;
+        if (client.y < kDragH) return HTCAPTION;  // 拖动整窗
+        return HTCLIENT;
+    }
     case WM_SETCURSOR: {
         if (LOWORD(lp) == HTCLIENT) {
             POINT pt;
             GetCursorPos(&pt);
             ScreenToClient(hwnd, &pt);
-            if (HitSplitter(hwnd, pt.x)) {
+            if (HitSplitter(hwnd, pt.x, pt.y)) {
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
             }
@@ -284,7 +308,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(lp);
-        if (HitSplitter(hwnd, x)) {
+        int y = GET_Y_LPARAM(lp);
+        if (HitSplitter(hwnd, x, y)) {
             g_draggingSplit = true;
             SetCapture(hwnd);
             return 0;
@@ -309,13 +334,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND: {
         RECT rc{};
         GetClientRect(hwnd, &rc);
+        HDC hdc = reinterpret_cast<HDC>(wp);
         HBRUSH br = CreateSolidBrush(kListBk);
-        FillRect(reinterpret_cast<HDC>(wp), &rc, br);
+        FillRect(hdc, &rc, br);
         DeleteObject(br);
-        // 分割条
-        RECT split{g_splitX, 0, g_splitX + kSplitW, rc.bottom};
+        // 顶部分割感弱一点的拖动条（同色系，无白底导航栏）
+        RECT drag{0, 0, rc.right, kDragH};
+        HBRUSH db = CreateSolidBrush(kSplitBk);
+        FillRect(hdc, &drag, db);
+        DeleteObject(db);
+        // 竖向分割条
+        RECT split{g_splitX, kDragH, g_splitX + kSplitW, rc.bottom};
         HBRUSH sb = CreateSolidBrush(kSplitBk);
-        FillRect(reinterpret_cast<HDC>(wp), &split, sb);
+        FillRect(hdc, &split, sb);
         DeleteObject(sb);
         return 1;
     }
@@ -378,8 +409,9 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
         SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 
+    // 无 WS_CAPTION：去掉白色标题栏；拖动/缩放靠 WM_NCHITTEST
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
-                                WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_CLIPCHILDREN,
+                                WS_POPUP | WS_CLIPCHILDREN,
                                 g_defX, g_defY, g_defW, g_defH, nullptr, nullptr, inst, nullptr);
     if (!hwnd) return false;
     SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
