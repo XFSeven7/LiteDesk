@@ -55,6 +55,17 @@ std::wstring GetLiteDeskRoot() {
 }
 
 std::wstring GetParkedDir() {
+    // 与桌面同卷暂存，避免跨盘移动文件夹失败（MoveFileEx 对跨卷目录无效）
+    const std::wstring desk = GetDesktopPath();
+    if (!desk.empty()) {
+        wchar_t vol[MAX_PATH]{};
+        if (GetVolumePathNameW(desk.c_str(), vol, MAX_PATH)) {
+            std::wstring root(vol);
+            if (!root.empty() && (root.back() == L'\\' || root.back() == L'/'))
+                root.pop_back();
+            return JoinPath(root, L"LiteDesk\\Parked");
+        }
+    }
     return JoinPath(GetLiteDeskRoot(), L"Parked");
 }
 

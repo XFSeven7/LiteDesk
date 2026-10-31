@@ -1,6 +1,6 @@
 # LiteDesk
 
-Windows 10/11 轻量桌面整理工具（C++ / Win32）。托盘一键整理桌面：非应用项移入 `%AppData%\LiteDesk\Parked` 并在两个悬浮列表中展示；`.exe` / `.lnk` 等应用项留在桌面。
+Windows 10/11 轻量桌面整理工具（C++ / Win32）。托盘一键整理桌面：非应用项移入**与桌面同卷**的 `X:\LiteDesk\Parked`（`X` 为桌面所在盘）并在两个悬浮列表中展示；`.exe` / `.lnk` 等应用项留在桌面。清单与日志仍在 `%AppData%\LiteDesk`。
 
 ## 环境
 
@@ -40,7 +40,7 @@ cmake --build build --config Release --target LiteDeskTests
 
 | 路径 | 说明 |
 |------|------|
-| `Parked\` | 整理期间从桌面移入的文件/文件夹 |
+| `X:\LiteDesk\Parked\` | 整理期间从桌面移入的文件/文件夹（与桌面同盘；同卷移动，避免跨盘文件夹失败） |
 | `manifest.json` | 收纳记录（桌面原名 ↔ Parked 路径） |
 | `session.flag` | 整理会话标记；异常退出时下次启动会尝试自动还原 |
 | `logs\` | 运行日志 |
@@ -61,7 +61,7 @@ cmake --build build --config Release --target LiteDeskTests
 - 跨盘移动依赖 `MoveFileEx`；部分环境可能失败并记入日志（见 `park_restore` 测试）。
 - **会话内 300ms 自动收纳**：整理后桌面一有变化，约 300ms 防抖后即自动 park 非应用项，可能打断「新建后重命名」或浏览器下载（临时文件/重命名中的文件被移走）。需要时先「还原桌面」再操作。
 - **OneDrive 重定向桌面**：桌面位于 OneDrive 文件夹时，移动会触发同步；同步占用、「仅在线」占位文件可能导致收纳/还原失败或变慢，建议暂停同步时使用，或避免整理占位文件。
-- **跨卷文件夹**：桌面与 `%AppData%` 不在同一卷时，`MoveFileEx` 可复制移动文件，但**不支持跨卷移动文件夹**（会失败并记入日志，该文件夹留在桌面）；跨卷文件移动也非原子，被占用/权限问题时失败项保留在 `manifest.json` 待重试。
+- **暂存位置**：`Parked` 放在桌面所在卷根下的 `LiteDesk\Parked`（例如桌面在 `G:\Desktop` 则为 `G:\LiteDesk\Parked`）。若该卷无法创建目录，会回退到 `%AppData%\LiteDesk\Parked`（跨卷时文件夹仍可能失败）。
 - 隐藏/系统属性的桌面项（及 `desktop.ini`）不会被收纳。
 
 ## 手工验收清单（spec §7）

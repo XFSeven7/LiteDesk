@@ -8,6 +8,7 @@ std::wstring GetDesktopPath();
 // %AppData%\LiteDesk
 std::wstring GetLiteDeskRoot();
 
+// 优先：桌面所在卷\LiteDesk\Parked（同卷移动）；失败回退 AppData\LiteDesk\Parked
 std::wstring GetParkedDir();
 std::wstring GetManifestPath();
 std::wstring GetSessionFlagPath();
