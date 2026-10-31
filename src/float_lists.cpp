@@ -35,26 +35,15 @@ int g_splitX = 280;          // 分割条左侧宽度（客户区坐标）
 bool g_draggingSplit = false;
 int g_defX = 80, g_defY = 80, g_defW = 560, g_defH = 480;
 
-// 色键透明色：背景刷成它即完全透出桌面（该像素本身点不中，图标/文字/拖条可以）
-constexpr COLORREF kKeyColor = RGB(255, 0, 255);
+constexpr BYTE kWindowAlpha = 210;  // 整窗半透明，整窗可点
+constexpr COLORREF kListBk = RGB(16, 16, 16);
+constexpr COLORREF kSplitBk = RGB(48, 48, 48);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
-constexpr COLORREF kSplitLine = RGB(220, 220, 220);
-constexpr COLORREF kDragBar = RGB(48, 48, 48);  // 非色键：顶条可拖
 constexpr int kSnapPx = 16;
-constexpr int kSplitW = 4;
+constexpr int kSplitW = 5;
 constexpr int kMinPane = 80;
 constexpr int kDragH = 12;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
-
-HFONT MakeUiFont() {
-    // 关掉 ClearType，避免色键边缘发紫、发糊
-    NONCLIENTMETRICSW ncm{sizeof(ncm)};
-    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
-    ncm.lfMessageFont.lfQuality = NONANTIALIASED_QUALITY;
-    return CreateFontIndirectW(&ncm.lfMessageFont);
-}
-
-HFONT g_uiFont = nullptr;
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -206,68 +195,20 @@ bool HitSplitter(HWND hwnd, int x, int y) {
 HWND CreateList(HINSTANCE inst, HWND parent) {
     HWND list = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_NOCOLUMNHEADER |
-                                    LVS_SINGLESEL | LVS_SHAREIMAGELISTS | LVS_OWNERDRAWFIXED,
+                                    LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
                                 0, 0, 10, 10, parent, nullptr, inst, nullptr);
     if (!list) return nullptr;
     ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
     SetWindowTheme(list, L"", L"");
-    ListView_SetBkColor(list, kKeyColor);
-    ListView_SetTextBkColor(list, kKeyColor);
+    ListView_SetBkColor(list, kListBk);
+    ListView_SetTextBkColor(list, kListBk);
     ListView_SetTextColor(list, kTextColor);
-    if (g_uiFont) SendMessageW(list, WM_SETFONT, reinterpret_cast<WPARAM>(g_uiFont), TRUE);
     if (g_sysImages) ListView_SetImageList(list, g_sysImages, LVSIL_SMALL);
     LVCOLUMNW col{};
     col.mask = LVCF_WIDTH;
     col.cx = 200;
     ListView_InsertColumn(list, 0, &col);
     return list;
-}
-
-// Owner-draw：色键底 + 无 ClearType 白字，图标/文字像素可点
-void DrawListItem(const DRAWITEMSTRUCT* dis) {
-    if (!dis || dis->CtlType != ODT_LISTVIEW) return;
-    Pane* pane = PaneFromList(dis->hwndItem);
-    HDC hdc = dis->hDC;
-    RECT rc = dis->rcItem;
-
-    HBRUSH br = CreateSolidBrush(kKeyColor);
-    FillRect(hdc, &rc, br);
-    DeleteObject(br);
-
-    if (dis->itemID == (UINT)-1 || !pane) return;
-    if ((int)dis->itemID >= (int)pane->paths.size()) return;
-
-    const bool sel = (dis->itemState & ODS_SELECTED) != 0;
-    if (sel) {
-        // 选中用近黑非色键底，保证整行可点、可辨
-        RECT hi = rc;
-        HBRUSH sb = CreateSolidBrush(RGB(32, 32, 32));
-        FillRect(hdc, &hi, sb);
-        DeleteObject(sb);
-    }
-
-    LVITEMW it{};
-    it.mask = LVIF_IMAGE | LVIF_TEXT;
-    wchar_t name[520];
-    it.pszText = name;
-    it.cchTextMax = 520;
-    it.iItem = (int)dis->itemID;
-    ListView_GetItem(dis->hwndItem, &it);
-
-    const int pad = 4;
-    const int iconSize = 16;
-    int x = rc.left + pad;
-    int y = rc.top + (rc.bottom - rc.top - iconSize) / 2;
-    if (g_sysImages)
-        ImageList_Draw(g_sysImages, it.iImage, hdc, x, y, ILD_TRANSPARENT);
-    x += iconSize + 4;
-
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, kTextColor);
-    HFONT old = g_uiFont ? static_cast<HFONT>(SelectObject(hdc, g_uiFont)) : nullptr;
-    RECT tr{x, rc.top, rc.right - pad, rc.bottom};
-    DrawTextW(hdc, name, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    if (old) SelectObject(hdc, old);
 }
 
 void FillList(Pane* pane, const std::vector<std::wstring>& paths) {
@@ -394,40 +335,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         RECT rc{};
         GetClientRect(hwnd, &rc);
         HDC hdc = reinterpret_cast<HDC>(wp);
-        HBRUSH br = CreateSolidBrush(kKeyColor);
+        HBRUSH br = CreateSolidBrush(kListBk);
         FillRect(hdc, &rc, br);
         DeleteObject(br);
-        // 顶条非透明：拖动整窗
         RECT drag{0, 0, rc.right, kDragH};
-        HBRUSH db = CreateSolidBrush(kDragBar);
+        HBRUSH db = CreateSolidBrush(kSplitBk);
         FillRect(hdc, &drag, db);
         DeleteObject(db);
-        // 分割线（非色键）
-        HPEN pen = CreatePen(PS_SOLID, 1, kSplitLine);
-        HGDIOBJ old = SelectObject(hdc, pen);
-        MoveToEx(hdc, g_splitX + kSplitW / 2, kDragH, nullptr);
-        LineTo(hdc, g_splitX + kSplitW / 2, rc.bottom);
-        SelectObject(hdc, old);
-        DeleteObject(pen);
+        RECT split{g_splitX, kDragH, g_splitX + kSplitW, rc.bottom};
+        HBRUSH sb = CreateSolidBrush(kSplitBk);
+        FillRect(hdc, &split, sb);
+        DeleteObject(sb);
         return 1;
-    }
-    case WM_MEASUREITEM: {
-        auto* mis = reinterpret_cast<MEASUREITEMSTRUCT*>(lp);
-        if (mis && mis->CtlType == ODT_LISTVIEW) {
-            mis->itemHeight = 22;
-            return TRUE;
-        }
-        if (g_cm2 && SUCCEEDED(g_cm2->HandleMenuMsg(msg, wp, lp))) return TRUE;
-        break;
-    }
-    case WM_DRAWITEM: {
-        auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
-        if (dis && dis->CtlType == ODT_LISTVIEW) {
-            DrawListItem(dis);
-            return TRUE;
-        }
-        if (g_cm2 && SUCCEEDED(g_cm2->HandleMenuMsg(msg, wp, lp))) return TRUE;
-        break;
     }
     case WM_NOTIFY: {
         auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lp);
@@ -455,7 +374,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_INITMENUPOPUP:
-        if (g_cm2 && SUCCEEDED(g_cm2->HandleMenuMsg(msg, wp, lp))) return 0;
+    case WM_DRAWITEM:
+    case WM_MEASUREITEM:
+        if (g_cm2 && SUCCEEDED(g_cm2->HandleMenuMsg(msg, wp, lp))) return msg == WM_INITMENUPOPUP ? 0 : TRUE;
         break;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -475,24 +396,23 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         wc.lpfnWndProc = WndProc;
         wc.hInstance = inst;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = nullptr;  // 禁止系统灰底
+        wc.hbrBackground = CreateSolidBrush(kListBk);
         wc.lpszClassName = kClassName;
         if (!RegisterClassExW(&wc)) return false;
         g_classRegistered = true;
     }
-    if (!g_uiFont) g_uiFont = MakeUiFont();
 
     SHFILEINFOW sfi{};
     g_sysImages = reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
         SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 
-    // 色键全透明：空白处点穿到桌面；图标/文字/顶条/分割线可点
+    // 整窗 LWA_ALPHA 半透明：背景可点，不走色键
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
                                 WS_POPUP | WS_CLIPCHILDREN,
                                 g_defX, g_defY, g_defW, g_defH, nullptr, nullptr, inst, nullptr);
     if (!hwnd) return false;
-    SetLayeredWindowAttributes(hwnd, kKeyColor, 0, LWA_COLORKEY);
+    SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
 
     g_folder.list = CreateList(inst, hwnd);
     g_file.list = CreateList(inst, hwnd);
@@ -521,10 +441,6 @@ void FloatLists_Destroy(FloatLists* fl) {
     g_folder.list = g_file.list = nullptr;
     g_folder.paths.clear();
     g_file.paths.clear();
-    if (g_uiFont) {
-        DeleteObject(g_uiFont);
-        g_uiFont = nullptr;
-    }
     if (g_comInited) {
         CoUninitialize();
         g_comInited = false;
