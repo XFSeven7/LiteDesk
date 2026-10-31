@@ -34,6 +34,10 @@ HIMAGELIST g_sysImages = nullptr;
 int g_splitX = 280;          // 分割条左侧宽度（客户区坐标）
 bool g_draggingSplit = false;
 int g_defX = 80, g_defY = 80, g_defW = 560, g_defH = 480;
+bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D 收起）
+bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
+constexpr UINT_PTR kKeepAliveTimer = 42;
+constexpr UINT kKeepAliveMs = 400;
 
 constexpr BYTE kWindowAlpha = 210;  // 整窗半透明，整窗可点
 constexpr COLORREF kListBk = RGB(16, 16, 16);
@@ -79,7 +83,7 @@ void ApplySnap(RECT* pr) {
     if (nearEq(pr->bottom, wa.bottom)) { pr->bottom = wa.bottom; pr->top = pr->bottom - h; }
 }
 
-// 桌面图标宿主（Progman 或 WorkerW）
+// 桌面图标宿主（Progman 或 WorkerW）。HWND_BOTTOM 会沉到壁纸下看不见。
 HWND FindDesktopHost() {
     HWND progman = FindWindowW(L"Progman", nullptr);
     if (progman && FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr))
@@ -92,45 +96,34 @@ HWND FindDesktopHost() {
     return progman;
 }
 
-// 桌面图标列表的父窗。挂到这里 ⇒ 属于桌面，Win+D / Show Desktop 不会收起
-HWND FindDesktopDefView() {
-    HWND host = FindDesktopHost();
-    return host ? FindWindowExW(host, nullptr, L"SHELLDLL_DefView", nullptr) : nullptr;
-}
-
-// 屏幕坐标 → 相对父窗客户区（子窗 SetWindowPos 要用父相对坐标）
-void MoveSizeByScreen(HWND hwnd, int x, int y, int w, int h, UINT flags) {
-    POINT pt{x, y};
-    if (HWND parent = GetParent(hwnd)) ScreenToClient(parent, &pt);
-    SetWindowPos(hwnd, nullptr, pt.x, pt.y, w, h, flags | SWP_NOACTIVATE);
-}
-
-// 挂到 DefView 并置于其内最前（压过桌面图标，但仍低于普通应用）
-void AttachToDesktop(HWND hwnd) {
+// 插到桌面宿主正上方：低于普通窗口，高于壁纸/图标
+void PinAboveDesktop(HWND hwnd) {
     if (!hwnd) return;
-    HWND def = FindDesktopDefView();
-    if (!def) {
+    HWND host = FindDesktopHost();
+    if (!host) {
         SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         return;
     }
-    if (GetParent(hwnd) != def) {
-        RECT r{};
-        GetWindowRect(hwnd, &r);
-        // POPUP → CHILD，再挂到桌面视图（否则仍是顶层，会被 Win+D 收起）
-        LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        style = (style & ~WS_POPUP) | WS_CHILD;
-        SetWindowLongPtrW(hwnd, GWL_STYLE, style);
-        SetParent(hwnd, def);
-        MoveSizeByScreen(hwnd, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_FRAMECHANGED);
-    }
-    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    HWND above = GetWindow(host, GW_HWNDPREV);
+    if (above)
+        SetWindowPos(hwnd, above, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    else
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+// 用户要显示时：被 Win+D 收起/最小化后立刻拉回（不挂 DefView，避免滚动条花屏）
+void KeepVisibleIfWanted(HWND hwnd) {
+    if (!hwnd || !g_wantVisible || g_hidingSelf) return;
+    if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+    if (!IsWindowVisible(hwnd)) ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    PinAboveDesktop(hwnd);
 }
 
 void EnsureOnWorkArea(HWND hwnd) {
     RECT r{};
     if (!hwnd || !GetWindowRect(hwnd, &r)) return;
     if (MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) return;
-    MoveSizeByScreen(hwnd, g_defX, g_defY, g_defW, g_defH, SWP_NOZORDER);
+    SetWindowPos(hwnd, nullptr, g_defX, g_defY, g_defW, g_defH, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
@@ -172,7 +165,12 @@ void ShowBlankMenu(HWND owner, POINT pt) {
     AppendMenuW(menu, MF_STRING, 3, L"隐藏本窗");
     UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner, nullptr);
     DestroyMenu(menu);
-    if (cmd == 3) ShowWindow(owner, SW_HIDE);
+    if (cmd == 3) {
+        g_wantVisible = false;
+        g_hidingSelf = true;
+        ShowWindow(owner, SW_HIDE);
+        g_hidingSelf = false;
+    }
     if (g_fl && g_fl->notifyHwnd) {
         UINT msg = cmd == 1 ? FL_WM_REFRESH : cmd == 2 ? FL_WM_RESTORE : cmd == 3 ? FL_WM_HIDE : 0;
         if (msg) PostMessageW(g_fl->notifyHwnd, msg, 0, 0);
@@ -195,12 +193,17 @@ void LayoutPanes(HWND hwnd) {
     if (g_splitX < kMinPane) g_splitX = kMinPane;
     if (g_splitX > cw - kMinPane - kSplitW) g_splitX = cw - kMinPane - kSplitW;
 
+    auto fitCol = [](HWND list, int paneW) {
+        if (!list) return;
+        ListView_SetColumnWidth(list, 0, paneW > 24 ? paneW - 8 : paneW);
+        ShowScrollBar(list, SB_HORZ, FALSE);
+    };
     if (g_folder.list)
         MoveWindow(g_folder.list, 0, kDragH, g_splitX, listH, TRUE);
     if (g_file.list)
         MoveWindow(g_file.list, g_splitX + kSplitW, kDragH, cw - g_splitX - kSplitW, listH, TRUE);
-    if (g_folder.list) ListView_SetColumnWidth(g_folder.list, 0, LVSCW_AUTOSIZE_USEHEADER);
-    if (g_file.list) ListView_SetColumnWidth(g_file.list, 0, LVSCW_AUTOSIZE_USEHEADER);
+    fitCol(g_folder.list, g_splitX);
+    fitCol(g_file.list, cw - g_splitX - kSplitW);
     InvalidateRect(hwnd, nullptr, FALSE);
 }
 
@@ -248,7 +251,10 @@ void FillList(Pane* pane, const std::vector<std::wstring>& paths) {
         it.iImage = sfi.iIcon;
         ListView_InsertItem(pane->list, &it);
     }
-    ListView_SetColumnWidth(pane->list, 0, LVSCW_AUTOSIZE_USEHEADER);
+    RECT rc{};
+    GetClientRect(pane->list, &rc);
+    ListView_SetColumnWidth(pane->list, 0, rc.right > 8 ? rc.right - 4 : rc.right);
+    ShowScrollBar(pane->list, SB_HORZ, FALSE);
     SendMessageW(pane->list, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(pane->list, nullptr, TRUE);
 }
@@ -258,16 +264,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         LayoutPanes(hwnd);
         return 0;
+    case WM_TIMER:
+        if (wp == kKeepAliveTimer) {
+            KeepVisibleIfWanted(hwnd);
+            return 0;
+        }
+        break;
+    case WM_SYSCOMMAND:
+        // 拦截最小化：Show Desktop / Win+D 常走这条
+        if ((wp & 0xFFF0) == SC_MINIMIZE) {
+            if (g_wantVisible) return 0;
+        }
+        break;
     case WM_WINDOWPOSCHANGING: {
         auto* pos = reinterpret_cast<WINDOWPOS*>(lp);
-        if (pos->flags & SWP_NOZORDER) break;
-        HWND def = FindDesktopDefView();
-        if (def && GetParent(hwnd) == def) {
-            // 子窗：保持在 DefView 内最前（盖住图标），不参与顶层 Z 序战争
-            pos->hwndInsertAfter = HWND_TOP;
-            break;
+        // 用户要显示时，拒绝被壳层 Hide（Show Desktop）
+        if (g_wantVisible && !g_hidingSelf && (pos->flags & SWP_HIDEWINDOW)) {
+            pos->flags &= ~SWP_HIDEWINDOW;
         }
-        // 回退：顶层窗插到桌面宿主正上方
+        if (pos->flags & SWP_NOZORDER) break;
         HWND host = FindDesktopHost();
         if (!host || host == hwnd) break;
         HWND prev = GetWindow(host, GW_HWNDPREV);
@@ -279,20 +294,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_ACTIVATE:
-        if (LOWORD(wp) != WA_INACTIVE) AttachToDesktop(hwnd);
+        if (LOWORD(wp) != WA_INACTIVE) PinAboveDesktop(hwnd);
         break;
     case WM_EXITSIZEMOVE: {
         RECT r{};
         if (GetWindowRect(hwnd, &r)) {
             ApplySnap(&r);
-            MoveSizeByScreen(hwnd, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-            AttachToDesktop(hwnd);
+            SetWindowPos(hwnd, nullptr, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            PinAboveDesktop(hwnd);
         }
         FloatLists_SavePlacement();
         return 0;
     }
     case WM_CLOSE:
+        g_wantVisible = false;
+        g_hidingSelf = true;
         ShowWindow(hwnd, SW_HIDE);
+        g_hidingSelf = false;
         return 0;
     case WM_NCHITTEST: {
         // 无系统标题栏：顶条拖动，四边缩放
@@ -429,13 +447,14 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
         SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 
-    // 先建顶层再 SetParent 到 DefView（直接 WS_CHILD 建在 DefView 上常失败）
+    // 顶层半透明窗（不挂 DefView：挂上去滚动条会花、布局错乱）
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
                                 WS_POPUP | WS_CLIPCHILDREN, g_defX, g_defY, g_defW, g_defH, nullptr,
                                 nullptr, inst, nullptr);
     if (!hwnd) return false;
     SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
-    AttachToDesktop(hwnd);  // 挂上后 Win+D / Show Desktop 不再收起
+    // 定时拉回：挡住 Win+D / 右下角 Show Desktop 的收起
+    SetTimer(hwnd, kKeepAliveTimer, kKeepAliveMs, nullptr);
 
     g_folder.list = CreateList(inst, hwnd);
     g_file.list = CreateList(inst, hwnd);
@@ -449,7 +468,7 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     g_fl = out;
     FloatLists_LoadPlacement();
     LayoutPanes(hwnd);
-    AttachToDesktop(hwnd);
+    PinAboveDesktop(hwnd);
     return true;
 }
 
@@ -459,7 +478,11 @@ void FloatLists_Destroy(FloatLists* fl) {
         FloatLists_SavePlacement();
         g_fl = nullptr;
     }
-    if (fl->hwnd) DestroyWindow(fl->hwnd);
+    g_wantVisible = false;
+    if (fl->hwnd) {
+        KillTimer(fl->hwnd, kKeepAliveTimer);
+        DestroyWindow(fl->hwnd);
+    }
     fl->hwnd = nullptr;
     g_folder.list = g_file.list = nullptr;
     g_folder.paths.clear();
@@ -480,12 +503,16 @@ void FloatLists_SetItems(FloatLists* fl, const std::vector<std::wstring>& folder
 void FloatLists_Show(FloatLists* fl, bool show) {
     if (!fl || !fl->hwnd) return;
     if (!show) {
+        g_wantVisible = false;
+        g_hidingSelf = true;
         ShowWindow(fl->hwnd, SW_HIDE);
+        g_hidingSelf = false;
         return;
     }
+    g_wantVisible = true;
     EnsureOnWorkArea(fl->hwnd);
-    AttachToDesktop(fl->hwnd);
     ShowWindow(fl->hwnd, SW_SHOWNOACTIVATE);
+    PinAboveDesktop(fl->hwnd);
     UpdateWindow(fl->hwnd);
 }
 
@@ -523,7 +550,7 @@ void FloatLists_LoadPlacement() {
         h = g_defH;
         g_splitX = w / 2 - kSplitW / 2;
     }
-    MoveSizeByScreen(g_fl->hwnd, x, y, w, h, SWP_NOZORDER);
+    SetWindowPos(g_fl->hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     LayoutPanes(g_fl->hwnd);
-    AttachToDesktop(g_fl->hwnd);
+    PinAboveDesktop(g_fl->hwnd);
 }
