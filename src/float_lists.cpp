@@ -238,6 +238,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         LayoutPanes(hwnd);
         return 0;
+    case WM_WINDOWPOSCHANGING: {
+        // 锁定在「桌面宿主正上方」：不沉到壁纸下，也不抬到其它应用之上
+        auto* wp = reinterpret_cast<WINDOWPOS*>(lp);
+        if (wp->flags & SWP_NOZORDER) break;
+        HWND host = FindDesktopHost();
+        if (!host || host == hwnd) break;
+        HWND prev = GetWindow(host, GW_HWNDPREV);
+        if (prev == hwnd) {
+            wp->flags |= SWP_NOZORDER;  // 已在正确层，拒绝被抬到前台
+            break;
+        }
+        // prev 是当前紧贴桌面之上的窗口；插到它下面 ⇒ 我们紧贴桌面之上
+        wp->hwndInsertAfter = prev ? prev : HWND_TOP;
+        break;
+    }
+    case WM_ACTIVATE:
+        // 点击本窗时系统可能想置顶，激活后再钉回桌面层上方
+        if (LOWORD(wp) != WA_INACTIVE) PinAboveDesktop(hwnd);
+        break;
     case WM_EXITSIZEMOVE: {
         RECT r{};
         if (GetWindowRect(hwnd, &r)) {
