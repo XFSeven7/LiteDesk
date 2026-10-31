@@ -159,6 +159,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+void SizeListToClient(WinCtx* ctx, HWND hwnd) {
+    if (!ctx || !ctx->list || !hwnd) return;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    MoveWindow(ctx->list, 0, 0, rc.right - rc.left, rc.bottom - rc.top, TRUE);
+    ListView_SetColumnWidth(ctx->list, 0, LVSCW_AUTOSIZE_USEHEADER);
+}
+
 HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kClassName, ctx->title,
                                 WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_CLIPCHILDREN,
@@ -166,6 +174,7 @@ HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
                                 nullptr, nullptr, inst, ctx);
     if (!hwnd) return nullptr;
 
+    // 父窗 Create 期间的 WM_SIZE 早于 list 创建，这里必须按客户区再铺一次
     ctx->list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
                                 0, 0, 10, 10, hwnd, nullptr, inst, nullptr);
     if (!ctx->list) { DestroyWindow(hwnd); return nullptr; }
@@ -177,6 +186,7 @@ HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
     col.pszText = const_cast<wchar_t*>(L"名称");
     col.cx = ctx->defW;
     ListView_InsertColumn(ctx->list, 0, &col);
+    SizeListToClient(ctx, hwnd);
 
     SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     return hwnd;
@@ -296,5 +306,6 @@ void FloatLists_LoadPlacement() {
             x = c.defX; y = c.defY; w = c.defW; h = c.defH;
         }
         SetWindowPos(hs[i], HWND_BOTTOM, x, y, w, h, SWP_NOACTIVATE);
+        SizeListToClient(&g_ctx[i], hs[i]);
     }
 }
