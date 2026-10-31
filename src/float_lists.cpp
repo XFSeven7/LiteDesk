@@ -50,7 +50,7 @@ constexpr int kSplitW = 5;
 constexpr int kMinPane = 100;
 constexpr int kDragH = 16;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
-constexpr int kFontPt = 16;  // 列表字号（磅）
+constexpr int kFontPt = 20;  // 列表字号（磅）
 
 HFONT MakeListFont(HWND hwnd) {
     int dpi = 96;
