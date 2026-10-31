@@ -33,9 +33,9 @@ IContextMenu2* g_cm2 = nullptr;
 HIMAGELIST g_sysImages = nullptr;  // 系统图标表（大图标，勿 Destroy）
 HFONT g_listFont = nullptr;
 
-int g_splitX = 360;          // 分割条左侧宽度（客户区坐标）
+int g_splitX = 364;          // 原 280 × 1.3
 bool g_draggingSplit = false;
-int g_defX = 80, g_defY = 80, g_defW = 720, g_defH = 560;
+int g_defX = 80, g_defY = 80, g_defW = 728, g_defH = 624;  // 原 560×480 × 1.3
 bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D 收起）
 bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
 constexpr UINT_PTR kKeepAliveTimer = 42;
@@ -50,29 +50,19 @@ constexpr int kSplitW = 5;
 constexpr int kMinPane = 100;
 constexpr int kDragH = 16;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
-constexpr int kFontPt = 20;  // 列表字号（磅）
 
-HFONT MakeListFont(HWND hwnd) {
-    int dpi = 96;
-    using FnDpi = UINT(WINAPI*)(HWND);
-    if (auto p = reinterpret_cast<FnDpi>(
-            GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"))) {
-        if (hwnd) dpi = static_cast<int>(p(hwnd));
-    }
-    LOGFONTW lf{};
-    lf.lfHeight = -MulDiv(kFontPt, dpi, 72);
-    lf.lfWeight = FW_NORMAL;
-    lf.lfQuality = CLEARTYPE_QUALITY;
-    lf.lfCharSet = DEFAULT_CHARSET;
-    wcscpy_s(lf.lfFaceName, L"Segoe UI");
-    return CreateFontIndirectW(&lf);
+HFONT MakeListFont(HWND) {
+    // 系统默认消息字体 × 1.3（一般约 9pt → ~12pt）
+    NONCLIENTMETRICSW ncm{sizeof(ncm)};
+    SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
+    ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, 13, 10);
+    ncm.lfMessageFont.lfQuality = CLEARTYPE_QUALITY;
+    return CreateFontIndirectW(&ncm.lfMessageFont);
 }
 
 HIMAGELIST LoadBigSysImages() {
-    // 48×48，比 SMALL(16) 清晰得多；索引与 SYSICONINDEX 通用
+    // 32×32（SMALL 的 2 倍；没有 1.3× 的系统表，取最接近的大一档）
     IImageList* il = nullptr;
-    if (SUCCEEDED(SHGetImageList(SHIL_EXTRALARGE, IID_PPV_ARGS(&il))) && il)
-        return reinterpret_cast<HIMAGELIST>(il);
     if (SUCCEEDED(SHGetImageList(SHIL_LARGE, IID_PPV_ARGS(&il))) && il)
         return reinterpret_cast<HIMAGELIST>(il);
     SHFILEINFOW sfi{};
