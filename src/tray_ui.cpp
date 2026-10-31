@@ -2,6 +2,8 @@
 
 #include <shellapi.h>
 
+#include "resource.h"
+
 namespace {
 
 const UINT kTrayUid = 1;
@@ -17,12 +19,12 @@ NOTIFYICONDATAW MakeNid(HWND hwnd) {
 }  // namespace
 
 bool Tray_Add(HWND hwnd, HINSTANCE inst) {
-    (void)inst;
     NOTIFYICONDATAW nid = MakeNid(hwnd);
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
-    // v1 用系统默认图标
-    nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    // 资源里的 LiteDesk 闪电图标（由 SVG 栅格化）
+    nid.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
+    if (!nid.hIcon) nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     lstrcpynW(nid.szTip, L"LiteDesk", ARRAYSIZE(nid.szTip));
     return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
 }

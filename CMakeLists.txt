@@ -22,6 +22,7 @@ target_compile_definitions(LiteDeskTests PRIVATE UNICODE _UNICODE)
 target_link_libraries(LiteDeskTests PRIVATE shell32 ole32)
 
 # 主程序（GUI 子系统；托盘 + App 编排）
+enable_language(RC)
 add_executable(LiteDesk WIN32
     src/main.cpp
     src/app.cpp
@@ -31,6 +32,8 @@ add_executable(LiteDesk WIN32
     src/util_path.cpp
     src/util_log.cpp
     src/desktop_scanner.cpp
-    src/park_restore.cpp)
+    src/park_restore.cpp
+    resources/app.rc)
+target_include_directories(LiteDesk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 target_compile_definitions(LiteDesk PRIVATE UNICODE _UNICODE)
 target_link_libraries(LiteDesk PRIVATE comctl32 shell32 ole32 uxtheme)
