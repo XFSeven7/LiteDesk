@@ -33,24 +33,11 @@ bool g_classRegistered = false;
 bool g_comInited = false;         // 本模块是否调用了 CoInitializeEx
 IContextMenu2* g_cm2 = nullptr;   // 右键菜单展示期间，用于转发自绘消息
 HIMAGELIST g_sysImages = nullptr; // 系统小图标列表（共享，勿销毁）
-HFONT g_listFont = nullptr;       // 无抗锯齿字体，避免色键+ClearType 把字染成品红
 
-// 色键透明：列表背景用此色，分层窗将该色抠透（略增合成开销）
-constexpr COLORREF kClearKey = RGB(255, 0, 255);
+// 整窗半透明（LWA_ALPHA）：色键抠图会让透明像素点不中，故不用 COLORKEY
+constexpr BYTE kWindowAlpha = 210;
+constexpr COLORREF kListBk = RGB(16, 16, 16);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
-
-HFONT EnsureListFont() {
-    if (g_listFont) return g_listFont;
-    LOGFONTW lf{};
-    // 跟系统图标标题字体，但关掉 ClearType/抗锯齿
-    if (!SystemParametersInfoW(SPI_GETICONTITLELOGFONT, sizeof(lf), &lf, 0)) {
-        HFONT stock = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        GetObjectW(stock, sizeof(lf), &lf);
-    }
-    lf.lfQuality = NONANTIALIASED_QUALITY;
-    g_listFont = CreateFontIndirectW(&lf);
-    return g_listFont;
-}
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -147,30 +134,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         ShowWindow(hwnd, SW_HIDE);  // 关闭仅隐藏，生命周期由 Destroy 管理
         return 0;
     case WM_ERASEBKGND: {
-        // 客户区刷成色键色，才能被 LWA_COLORKEY 抠掉
         RECT rc{};
         GetClientRect(hwnd, &rc);
-        HBRUSH br = CreateSolidBrush(kClearKey);
+        HBRUSH br = CreateSolidBrush(kListBk);
         FillRect(reinterpret_cast<HDC>(wp), &rc, br);
         DeleteObject(br);
         return 1;
     }
     case WM_NOTIFY: {
-        auto* nmhdr = reinterpret_cast<NMHDR*>(lp);
-        if (!ctx || nmhdr->hwndFrom != ctx->list) break;
-        if (nmhdr->code == NM_CUSTOMDRAW) {
-            auto* cd = reinterpret_cast<LPNMLVCUSTOMDRAW>(lp);
-            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
-            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
-                // ClearType 会把白字和品红背景混成品红色素，色键抠不干净，看起来像字变粉
-                if (HFONT f = EnsureListFont()) SelectObject(cd->nmcd.hdc, f);
-                cd->clrText = kTextColor;
-                cd->clrTextBk = kClearKey;
-                return CDRF_NEWFONT;
-            }
-            return CDRF_DODEFAULT;
-        }
         auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lp);
+        if (!ctx || nm->hdr.hwndFrom != ctx->list) break;
         if (nm->hdr.code == NM_DBLCLK) {
             if (nm->iItem >= 0 && nm->iItem < (int)ctx->paths.size()) {
                 const std::wstring& p = ctx->paths[nm->iItem];
@@ -211,26 +184,25 @@ void SizeListToClient(WinCtx* ctx, HWND hwnd) {
 }
 
 HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
-    // 分层 + 色键透明；不要 WS_SYSMENU（无关闭按钮）
+    // 分层半透明（ALPHA 可点）；不要 WS_SYSMENU（无关闭按钮）
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, ctx->title,
                                 WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_CLIPCHILDREN,
                                 ctx->defX, ctx->defY, ctx->defW, ctx->defH,
                                 nullptr, nullptr, inst, ctx);
     if (!hwnd) return nullptr;
-    SetLayeredWindowAttributes(hwnd, kClearKey, 0, LWA_COLORKEY);
+    SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
 
-    // 无表头，避免不透明表头挡壁纸；父窗 Create 的 WM_SIZE 早于 list，稍后 SizeListToClient
+    // 无表头；父窗 Create 的 WM_SIZE 早于 list，稍后 SizeListToClient
     ctx->list = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_NOCOLUMNHEADER |
                                     LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
                                 0, 0, 10, 10, hwnd, nullptr, inst, nullptr);
     if (!ctx->list) { DestroyWindow(hwnd); return nullptr; }
     ListView_SetExtendedListViewStyle(ctx->list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-    SetWindowTheme(ctx->list, L"", L"");  // 关掉主题，才能真正用自定义背景色
-    ListView_SetBkColor(ctx->list, kClearKey);
-    ListView_SetTextBkColor(ctx->list, kClearKey);
+    SetWindowTheme(ctx->list, L"", L"");
+    ListView_SetBkColor(ctx->list, kListBk);
+    ListView_SetTextBkColor(ctx->list, kListBk);
     ListView_SetTextColor(ctx->list, kTextColor);
-    if (HFONT f = EnsureListFont()) SendMessageW(ctx->list, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
     if (g_sysImages) ListView_SetImageList(ctx->list, g_sysImages, LVSIL_SMALL);
 
     LVCOLUMNW col{};
@@ -306,7 +278,6 @@ void FloatLists_Destroy(FloatLists* fl) {
     if (fl->fileHwnd) DestroyWindow(fl->fileHwnd);
     fl->folderHwnd = fl->fileHwnd = nullptr;
     g_ctx[0].list = g_ctx[1].list = nullptr;
-    if (g_listFont) { DeleteObject(g_listFont); g_listFont = nullptr; }
     if (g_comInited) { CoUninitialize(); g_comInited = false; }
 }
 
