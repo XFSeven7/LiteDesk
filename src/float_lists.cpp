@@ -77,6 +77,42 @@ void ApplySnap(RECT* pr) {
     if (nearEq(pr->bottom, wa.bottom)) { pr->bottom = wa.bottom; pr->top = pr->bottom - h; }
 }
 
+// 桌面图标所在宿主（Progman 或 WorkerW）。HWND_BOTTOM 会沉到壁纸下看不见。
+HWND FindDesktopHost() {
+    HWND progman = FindWindowW(L"Progman", nullptr);
+    if (progman && FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr))
+        return progman;
+    HWND w = nullptr;
+    while ((w = FindWindowExW(nullptr, w, L"WorkerW", nullptr)) != nullptr) {
+        if (FindWindowExW(w, nullptr, L"SHELLDLL_DefView", nullptr))
+            return w;
+    }
+    return progman;
+}
+
+// 插到桌面宿主正上方：低于普通窗口，但高于壁纸/图标层，才能看见、能点
+void PinAboveDesktop(HWND hwnd) {
+    if (!hwnd) return;
+    HWND host = FindDesktopHost();
+    if (!host) {
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        return;
+    }
+    HWND above = GetWindow(host, GW_HWNDPREV);
+    if (above)
+        SetWindowPos(hwnd, above, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    else
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void EnsureOnWorkArea(HWND hwnd) {
+    RECT r{};
+    if (!hwnd || !GetWindowRect(hwnd, &r)) return;
+    if (MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) return;
+    SetWindowPos(hwnd, nullptr, g_defX, g_defY, g_defW, g_defH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
     EnsureCom();
     PIDLIST_ABSOLUTE pidl = nullptr;
@@ -202,18 +238,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         LayoutPanes(hwnd);
         return 0;
-    case WM_WINDOWPOSCHANGING: {
-        auto* wpos = reinterpret_cast<WINDOWPOS*>(lp);
-        wpos->hwndInsertAfter = HWND_BOTTOM;
-        wpos->flags &= ~SWP_NOZORDER;
-        break;
-    }
     case WM_EXITSIZEMOVE: {
         RECT r{};
         if (GetWindowRect(hwnd, &r)) {
             ApplySnap(&r);
             SetWindowPos(hwnd, nullptr, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            PinAboveDesktop(hwnd);
         }
         FloatLists_SavePlacement();
         return 0;
@@ -347,7 +377,7 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     g_fl = out;
     FloatLists_LoadPlacement();
     LayoutPanes(hwnd);
-    SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    PinAboveDesktop(hwnd);
     return true;
 }
 
@@ -377,8 +407,14 @@ void FloatLists_SetItems(FloatLists* fl, const std::vector<std::wstring>& folder
 
 void FloatLists_Show(FloatLists* fl, bool show) {
     if (!fl || !fl->hwnd) return;
-    ShowWindow(fl->hwnd, show ? SW_SHOWNOACTIVATE : SW_HIDE);
-    if (show) SetWindowPos(fl->hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (!show) {
+        ShowWindow(fl->hwnd, SW_HIDE);
+        return;
+    }
+    EnsureOnWorkArea(fl->hwnd);
+    ShowWindow(fl->hwnd, SW_SHOWNOACTIVATE);
+    PinAboveDesktop(fl->hwnd);
+    UpdateWindow(fl->hwnd);
 }
 
 void FloatLists_SavePlacement() {
@@ -415,6 +451,7 @@ void FloatLists_LoadPlacement() {
         h = g_defH;
         g_splitX = w / 2 - kSplitW / 2;
     }
-    SetWindowPos(g_fl->hwnd, HWND_BOTTOM, x, y, w, h, SWP_NOACTIVATE);
+    SetWindowPos(g_fl->hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     LayoutPanes(g_fl->hwnd);
+    PinAboveDesktop(g_fl->hwnd);
 }
