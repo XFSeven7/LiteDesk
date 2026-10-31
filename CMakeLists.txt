@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.20)
 project(LiteDesk LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# 单配置生成器（如 Ninja）未指定时默认 Release；VS 多配置请用 --config Release
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 add_executable(LiteDeskTests
     tests/test_main.cpp
     src/util_path.cpp
