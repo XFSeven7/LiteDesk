@@ -1,6 +1,7 @@
 #include "float_lists.h"
 
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <uxtheme.h>
@@ -9,6 +10,7 @@
 #include "util_path.h"
 
 #pragma comment(lib, "uxtheme.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 #ifdef _MSC_VER
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -35,15 +37,47 @@ int g_splitX = 280;          // 分割条左侧宽度（客户区坐标）
 bool g_draggingSplit = false;
 int g_defX = 80, g_defY = 80, g_defW = 560, g_defH = 480;
 
-constexpr BYTE kWindowAlpha = 210;
-constexpr COLORREF kListBk = RGB(16, 16, 16);
-constexpr COLORREF kSplitBk = RGB(48, 48, 48);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
+constexpr COLORREF kSplitLine = RGB(200, 200, 200);
 constexpr int kSnapPx = 16;
-constexpr int kSplitW = 5;
+constexpr int kSplitW = 4;
 constexpr int kMinPane = 80;
 constexpr int kDragH = 12;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
+
+// 系统未文档化：窗口合成透明（可点击，不像色键那样点不中）
+enum : DWORD { WCA_ACCENT_POLICY = 19 };
+enum : DWORD {
+    ACCENT_DISABLED = 0,
+    ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
+};
+struct AccentPolicy {
+    DWORD AccentState;
+    DWORD AccentFlags;
+    DWORD GradientColor;  // AABBGGRR
+    DWORD AnimationId;
+};
+struct WinCompAttrData {
+    DWORD Attribute;
+    PVOID Data;
+    ULONG DataSize;
+};
+
+bool EnableFullyTransparentBg(HWND hwnd) {
+    // 整窗客户区并入 DWM 玻璃区；再刷黑即透出桌面（可命中测试）
+    MARGINS margin{-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(hwnd, &margin);
+
+    using Fn = BOOL(WINAPI*)(HWND, WinCompAttrData*);
+    auto pSet = reinterpret_cast<Fn>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetWindowCompositionAttribute"));
+    if (!pSet) return true;
+    // alpha=1 的全透明渐变：几乎看不见底，但仍能接收鼠标
+    AccentPolicy policy{ACCENT_ENABLE_TRANSPARENTGRADIENT, 0, 0x01000000, 0};
+    WinCompAttrData data{WCA_ACCENT_POLICY, &policy, sizeof(policy)};
+    pSet(hwnd, &data);
+    return true;
+}
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -198,10 +232,13 @@ HWND CreateList(HINSTANCE inst, HWND parent) {
                                     LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
                                 0, 0, 10, 10, parent, nullptr, inst, nullptr);
     if (!list) return nullptr;
-    ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    // 透明背景 + 描边文字，壁纸能透过来且仍可读
+    ListView_SetExtendedListViewStyle(
+        list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_TRANSPARENTBKGND |
+                  LVS_EX_TRANSPARENTSHADOWTEXT);
     SetWindowTheme(list, L"", L"");
-    ListView_SetBkColor(list, kListBk);
-    ListView_SetTextBkColor(list, kListBk);
+    ListView_SetBkColor(list, CLR_NONE);
+    ListView_SetTextBkColor(list, CLR_NONE);
     ListView_SetTextColor(list, kTextColor);
     if (g_sysImages) ListView_SetImageList(list, g_sysImages, LVSIL_SMALL);
     LVCOLUMNW col{};
@@ -332,22 +369,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
     case WM_ERASEBKGND: {
+        // DWM 扩展框下刷纯黑 = 完全透出桌面（仍可点击）
         RECT rc{};
         GetClientRect(hwnd, &rc);
         HDC hdc = reinterpret_cast<HDC>(wp);
-        HBRUSH br = CreateSolidBrush(kListBk);
+        HBRUSH br = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         FillRect(hdc, &rc, br);
-        DeleteObject(br);
-        // 顶部分割感弱一点的拖动条（同色系，无白底导航栏）
-        RECT drag{0, 0, rc.right, kDragH};
-        HBRUSH db = CreateSolidBrush(kSplitBk);
-        FillRect(hdc, &drag, db);
-        DeleteObject(db);
-        // 竖向分割条
-        RECT split{g_splitX, kDragH, g_splitX + kSplitW, rc.bottom};
-        HBRUSH sb = CreateSolidBrush(kSplitBk);
-        FillRect(hdc, &split, sb);
-        DeleteObject(sb);
+        // 仅画一条细分割线，方便辨认左右栏
+        HPEN pen = CreatePen(PS_SOLID, 1, kSplitLine);
+        HGDIOBJ old = SelectObject(hdc, pen);
+        MoveToEx(hdc, g_splitX + kSplitW / 2, kDragH, nullptr);
+        LineTo(hdc, g_splitX + kSplitW / 2, rc.bottom);
+        SelectObject(hdc, old);
+        DeleteObject(pen);
         return 1;
     }
     case WM_NOTIFY: {
@@ -409,12 +443,12 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
         SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 
-    // 无 WS_CAPTION：去掉白色标题栏；拖动/缩放靠 WM_NCHITTEST
-    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
+    // 无标题栏、无 LAYERED 色键；透明靠 DWM/合成 API（可点击）
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kClassName, L"LiteDesk",
                                 WS_POPUP | WS_CLIPCHILDREN,
                                 g_defX, g_defY, g_defW, g_defH, nullptr, nullptr, inst, nullptr);
     if (!hwnd) return false;
-    SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
+    EnableFullyTransparentBg(hwnd);
 
     g_folder.list = CreateList(inst, hwnd);
     g_file.list = CreateList(inst, hwnd);
