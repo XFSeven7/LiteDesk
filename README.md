@@ -1,6 +1,6 @@
 # LiteDesk
 
-Windows 10/11 轻量桌面整理工具（C++ / Win32）。托盘一键整理桌面：非应用项移入**与桌面同卷**的 `X:\LiteDesk\Parked`（`X` 为桌面所在盘）并在两个悬浮列表中展示；`.exe` / `.lnk` 等应用项留在桌面。清单与日志仍在 `%AppData%\LiteDesk`。
+Windows 10/11 轻量桌面整理工具（C++ / Win32）。托盘一键整理桌面：非应用项移入**与桌面同卷**的 `X:\LiteDesk\Parked`（`X` 为桌面所在盘），在一个悬浮窗内左右分栏展示（左文件夹、右文件，中间可拖分割条）；`.exe` / `.lnk` 等应用项留在桌面。清单与日志仍在 `%AppData%\LiteDesk`。
 
 ## 环境
 
@@ -31,7 +31,7 @@ cmake --build build --config Release --target LiteDeskTests
 
 ## 首次运行
 
-1. 运行 `LiteDesk.exe`（建议 Release 构建）。系统托盘出现 LiteDesk 图标；两个悬浮列表默认隐藏。
+1. 运行 `LiteDesk.exe`（建议 Release 构建）。系统托盘出现 LiteDesk 图标；整理悬浮窗默认隐藏。
 2. 再次双击 exe 会因单实例互斥而直接退出（已有实例在运行）。
 3. 在托盘图标上**右键**：**一键整理** / **还原桌面** / **显示/隐藏列表窗** / **退出**。
 4. 整理后可在列表窗空白处右键：刷新（重新扫描并收纳新项）、还原桌面、隐藏列表。
@@ -44,7 +44,7 @@ cmake --build build --config Release --target LiteDeskTests
 | `manifest.json` | 收纳记录（桌面原名 ↔ Parked 路径） |
 | `session.flag` | 整理会话标记；异常退出时下次启动会尝试自动还原 |
 | `logs\` | 运行日志 |
-| `ui.ini` | 两个悬浮窗的位置 |
+| `ui.ini` | 悬浮窗位置与分割条比例 |
 
 **如何还原桌面**
 
@@ -68,7 +68,7 @@ cmake --build build --config Release --target LiteDeskTests
 
 在**测试账户或已备份的桌面**上逐项勾选：
 
-- [ ] **§7.1 一键整理**：桌面仅剩应用项（`.exe`、`.lnk` 等）；两个列表窗分别显示文件夹与文件。
+- [ ] **§7.1 一键整理**：桌面仅剩应用项（`.exe`、`.lnk` 等）；悬浮窗左栏为文件夹、右栏为文件。
 - [ ] **§7.2 还原 / 退出**：「还原桌面」或「退出」后桌面恢复原状；`Parked\` 为空；无 `session.flag`。
 - [ ] **§7.3 崩溃恢复**：整理完成后在任务管理器中结束 `LiteDesk.exe`，再次启动应自动恢复桌面。
 - [ ] **§7.4 整理中新增项**：已整理状态下在桌面新建文件/文件夹，应被自动收纳并出现在列表中。

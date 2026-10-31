@@ -11,7 +11,7 @@ public:
     void Shutdown();            // 还原桌面并销毁资源
     void Organize();            // 扫描 → 收纳 → 刷新列表 → 显示
     void Restore();             // 还原桌面并清空列表
-    void ToggleLists();         // 显示/隐藏两个列表窗
+    void ToggleLists();         // 显示/隐藏整理悬浮窗
     // 悬浮窗空白菜单回传（FL_WM_REFRESH / FL_WM_RESTORE / FL_WM_HIDE）
     void OnFolderEmptyCmd(UINT msg);
     // 整理会话中桌面出现变化（已防抖）：只 park 新出现的非应用并刷新列表

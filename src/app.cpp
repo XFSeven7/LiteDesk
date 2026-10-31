@@ -87,8 +87,7 @@ void App::Organize() {
     // 先亮窗再收纳，避免「点了整理却半天没窗」
     FloatLists_Show(&fl_, true);
     listsVisible_ = true;
-    if (fl_.folderHwnd) UpdateWindow(fl_.folderHwnd);
-    if (fl_.fileHwnd) UpdateWindow(fl_.fileHwnd);
+    if (fl_.hwnd) UpdateWindow(fl_.hwnd);
 
     const std::wstring desk = GetDesktopPath();
     ParkResult r = ParkNonApps(desk, ScanDesktop(desk));
