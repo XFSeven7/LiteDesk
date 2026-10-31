@@ -1,6 +1,7 @@
 // 临时烟测入口：创建两个置底悬浮窗、塞入假数据、跑消息循环。
 // 后续任务会由 App/托盘取代。
 #include <windows.h>
+#include <objbase.h>
 
 #include "float_lists.h"
 
@@ -25,6 +26,10 @@ LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+    // 创建悬浮列表前初始化 COM（SHGetFileInfo / Shell 图标依赖）
+    const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool comOk = SUCCEEDED(hrCom);
+
     WNDCLASSW wc{};
     wc.lpfnWndProc = MainProc;
     wc.hInstance = inst;
@@ -34,7 +39,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     FloatLists fl{};
     fl.notifyHwnd = mainWnd;
-    if (!FloatLists_Create(inst, &fl)) return 1;
+    if (!FloatLists_Create(inst, &fl)) {
+        if (comOk) CoUninitialize();
+        return 1;
+    }
 
     // 假路径（均为系统自带，保证图标与双击可用）
     FloatLists_SetItems(&fl,
@@ -48,5 +56,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         DispatchMessageW(&m);
     }
     FloatLists_Destroy(&fl);
+    if (comOk) CoUninitialize();
     return 0;
 }
