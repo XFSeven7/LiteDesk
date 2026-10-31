@@ -13,9 +13,11 @@ set_target_properties(LiteDeskTests PROPERTIES WIN32_EXECUTABLE FALSE)
 target_compile_definitions(LiteDeskTests PRIVATE UNICODE _UNICODE)
 target_link_libraries(LiteDeskTests PRIVATE shell32 ole32)
 
-# 主程序（GUI 子系统；当前 main 为烟测占位）
+# 主程序（GUI 子系统；托盘 + App 编排）
 add_executable(LiteDesk WIN32
     src/main.cpp
+    src/app.cpp
+    src/tray_ui.cpp
     src/float_lists.cpp
     src/util_path.cpp
     src/util_log.cpp
