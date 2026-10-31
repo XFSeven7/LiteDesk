@@ -116,8 +116,12 @@ void AttachToDesktop(HWND hwnd) {
     if (GetParent(hwnd) != def) {
         RECT r{};
         GetWindowRect(hwnd, &r);
+        // POPUP → CHILD，再挂到桌面视图（否则仍是顶层，会被 Win+D 收起）
+        LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        style = (style & ~WS_POPUP) | WS_CHILD;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, style);
         SetParent(hwnd, def);
-        MoveSizeByScreen(hwnd, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER);
+        MoveSizeByScreen(hwnd, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_FRAMECHANGED);
     }
     SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
@@ -425,15 +429,13 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
         SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 
-    // 挂到 SHELLDLL_DefView：跟桌面一体，Win+D / 右下角 Show Desktop 不收起
-    HWND def = FindDesktopDefView();
-    const DWORD style = (def ? WS_CHILD : WS_POPUP) | WS_CLIPCHILDREN;
-    POINT origin{g_defX, g_defY};
-    if (def) ScreenToClient(def, &origin);
-    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk", style,
-                                origin.x, origin.y, g_defW, g_defH, def, nullptr, inst, nullptr);
+    // 先建顶层再 SetParent 到 DefView（直接 WS_CHILD 建在 DefView 上常失败）
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
+                                WS_POPUP | WS_CLIPCHILDREN, g_defX, g_defY, g_defW, g_defH, nullptr,
+                                nullptr, inst, nullptr);
     if (!hwnd) return false;
     SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
+    AttachToDesktop(hwnd);  // 挂上后 Win+D / Show Desktop 不再收起
 
     g_folder.list = CreateList(inst, hwnd);
     g_file.list = CreateList(inst, hwnd);
