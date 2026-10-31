@@ -33,10 +33,24 @@ bool g_classRegistered = false;
 bool g_comInited = false;         // 本模块是否调用了 CoInitializeEx
 IContextMenu2* g_cm2 = nullptr;   // 右键菜单展示期间，用于转发自绘消息
 HIMAGELIST g_sysImages = nullptr; // 系统小图标列表（共享，勿销毁）
+HFONT g_listFont = nullptr;       // 无抗锯齿字体，避免色键+ClearType 把字染成品红
 
 // 色键透明：列表背景用此色，分层窗将该色抠透（略增合成开销）
 constexpr COLORREF kClearKey = RGB(255, 0, 255);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
+
+HFONT EnsureListFont() {
+    if (g_listFont) return g_listFont;
+    LOGFONTW lf{};
+    // 跟系统图标标题字体，但关掉 ClearType/抗锯齿
+    if (!SystemParametersInfoW(SPI_GETICONTITLELOGFONT, sizeof(lf), &lf, 0)) {
+        HFONT stock = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        GetObjectW(stock, sizeof(lf), &lf);
+    }
+    lf.lfQuality = NONANTIALIASED_QUALITY;
+    g_listFont = CreateFontIndirectW(&lf);
+    return g_listFont;
+}
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -148,6 +162,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             auto* cd = reinterpret_cast<LPNMLVCUSTOMDRAW>(lp);
             if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
             if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                // ClearType 会把白字和品红背景混成品红色素，色键抠不干净，看起来像字变粉
+                if (HFONT f = EnsureListFont()) SelectObject(cd->nmcd.hdc, f);
                 cd->clrText = kTextColor;
                 cd->clrTextBk = kClearKey;
                 return CDRF_NEWFONT;
@@ -214,6 +230,7 @@ HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
     ListView_SetBkColor(ctx->list, kClearKey);
     ListView_SetTextBkColor(ctx->list, kClearKey);
     ListView_SetTextColor(ctx->list, kTextColor);
+    if (HFONT f = EnsureListFont()) SendMessageW(ctx->list, WM_SETFONT, reinterpret_cast<WPARAM>(f), TRUE);
     if (g_sysImages) ListView_SetImageList(ctx->list, g_sysImages, LVSIL_SMALL);
 
     LVCOLUMNW col{};
@@ -289,6 +306,7 @@ void FloatLists_Destroy(FloatLists* fl) {
     if (fl->fileHwnd) DestroyWindow(fl->fileHwnd);
     fl->folderHwnd = fl->fileHwnd = nullptr;
     g_ctx[0].list = g_ctx[1].list = nullptr;
+    if (g_listFont) { DeleteObject(g_listFont); g_listFont = nullptr; }
     if (g_comInited) { CoUninitialize(); g_comInited = false; }
 }
 
