@@ -79,7 +79,7 @@ void ApplySnap(RECT* pr) {
     if (nearEq(pr->bottom, wa.bottom)) { pr->bottom = wa.bottom; pr->top = pr->bottom - h; }
 }
 
-// 桌面图标所在宿主（Progman 或 WorkerW）。HWND_BOTTOM 会沉到壁纸下看不见。
+// 桌面图标宿主（Progman 或 WorkerW）
 HWND FindDesktopHost() {
     HWND progman = FindWindowW(L"Progman", nullptr);
     if (progman && FindWindowExW(progman, nullptr, L"SHELLDLL_DefView", nullptr))
@@ -92,27 +92,41 @@ HWND FindDesktopHost() {
     return progman;
 }
 
-// 插到桌面宿主正上方：低于普通窗口，但高于壁纸/图标层，才能看见、能点
-void PinAboveDesktop(HWND hwnd) {
-    if (!hwnd) return;
+// 桌面图标列表的父窗。挂到这里 ⇒ 属于桌面，Win+D / Show Desktop 不会收起
+HWND FindDesktopDefView() {
     HWND host = FindDesktopHost();
-    if (!host) {
+    return host ? FindWindowExW(host, nullptr, L"SHELLDLL_DefView", nullptr) : nullptr;
+}
+
+// 屏幕坐标 → 相对父窗客户区（子窗 SetWindowPos 要用父相对坐标）
+void MoveSizeByScreen(HWND hwnd, int x, int y, int w, int h, UINT flags) {
+    POINT pt{x, y};
+    if (HWND parent = GetParent(hwnd)) ScreenToClient(parent, &pt);
+    SetWindowPos(hwnd, nullptr, pt.x, pt.y, w, h, flags | SWP_NOACTIVATE);
+}
+
+// 挂到 DefView 并置于其内最前（压过桌面图标，但仍低于普通应用）
+void AttachToDesktop(HWND hwnd) {
+    if (!hwnd) return;
+    HWND def = FindDesktopDefView();
+    if (!def) {
         SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         return;
     }
-    HWND above = GetWindow(host, GW_HWNDPREV);
-    if (above)
-        SetWindowPos(hwnd, above, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    else
-        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (GetParent(hwnd) != def) {
+        RECT r{};
+        GetWindowRect(hwnd, &r);
+        SetParent(hwnd, def);
+        MoveSizeByScreen(hwnd, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER);
+    }
+    SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void EnsureOnWorkArea(HWND hwnd) {
     RECT r{};
     if (!hwnd || !GetWindowRect(hwnd, &r)) return;
     if (MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) return;
-    SetWindowPos(hwnd, nullptr, g_defX, g_defY, g_defW, g_defH,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
+    MoveSizeByScreen(hwnd, g_defX, g_defY, g_defW, g_defH, SWP_NOZORDER);
 }
 
 void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
@@ -241,30 +255,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         LayoutPanes(hwnd);
         return 0;
     case WM_WINDOWPOSCHANGING: {
-        // 锁定在「桌面宿主正上方」：不沉到壁纸下，也不抬到其它应用之上
-        auto* wp = reinterpret_cast<WINDOWPOS*>(lp);
-        if (wp->flags & SWP_NOZORDER) break;
+        auto* pos = reinterpret_cast<WINDOWPOS*>(lp);
+        if (pos->flags & SWP_NOZORDER) break;
+        HWND def = FindDesktopDefView();
+        if (def && GetParent(hwnd) == def) {
+            // 子窗：保持在 DefView 内最前（盖住图标），不参与顶层 Z 序战争
+            pos->hwndInsertAfter = HWND_TOP;
+            break;
+        }
+        // 回退：顶层窗插到桌面宿主正上方
         HWND host = FindDesktopHost();
         if (!host || host == hwnd) break;
         HWND prev = GetWindow(host, GW_HWNDPREV);
         if (prev == hwnd) {
-            wp->flags |= SWP_NOZORDER;  // 已在正确层，拒绝被抬到前台
+            pos->flags |= SWP_NOZORDER;
             break;
         }
-        // prev 是当前紧贴桌面之上的窗口；插到它下面 ⇒ 我们紧贴桌面之上
-        wp->hwndInsertAfter = prev ? prev : HWND_TOP;
+        pos->hwndInsertAfter = prev ? prev : HWND_TOP;
         break;
     }
     case WM_ACTIVATE:
-        // 点击本窗时系统可能想置顶，激活后再钉回桌面层上方
-        if (LOWORD(wp) != WA_INACTIVE) PinAboveDesktop(hwnd);
+        if (LOWORD(wp) != WA_INACTIVE) AttachToDesktop(hwnd);
         break;
     case WM_EXITSIZEMOVE: {
         RECT r{};
         if (GetWindowRect(hwnd, &r)) {
             ApplySnap(&r);
-            SetWindowPos(hwnd, nullptr, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            PinAboveDesktop(hwnd);
+            MoveSizeByScreen(hwnd, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            AttachToDesktop(hwnd);
         }
         FloatLists_SavePlacement();
         return 0;
@@ -407,10 +425,13 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
         SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 
-    // 整窗 LWA_ALPHA 半透明：背景可点，不走色键
-    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
-                                WS_POPUP | WS_CLIPCHILDREN,
-                                g_defX, g_defY, g_defW, g_defH, nullptr, nullptr, inst, nullptr);
+    // 挂到 SHELLDLL_DefView：跟桌面一体，Win+D / 右下角 Show Desktop 不收起
+    HWND def = FindDesktopDefView();
+    const DWORD style = (def ? WS_CHILD : WS_POPUP) | WS_CLIPCHILDREN;
+    POINT origin{g_defX, g_defY};
+    if (def) ScreenToClient(def, &origin);
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk", style,
+                                origin.x, origin.y, g_defW, g_defH, def, nullptr, inst, nullptr);
     if (!hwnd) return false;
     SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
 
@@ -426,7 +447,7 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     g_fl = out;
     FloatLists_LoadPlacement();
     LayoutPanes(hwnd);
-    PinAboveDesktop(hwnd);
+    AttachToDesktop(hwnd);
     return true;
 }
 
@@ -461,8 +482,8 @@ void FloatLists_Show(FloatLists* fl, bool show) {
         return;
     }
     EnsureOnWorkArea(fl->hwnd);
+    AttachToDesktop(fl->hwnd);
     ShowWindow(fl->hwnd, SW_SHOWNOACTIVATE);
-    PinAboveDesktop(fl->hwnd);
     UpdateWindow(fl->hwnd);
 }
 
@@ -500,7 +521,7 @@ void FloatLists_LoadPlacement() {
         h = g_defH;
         g_splitX = w / 2 - kSplitW / 2;
     }
-    SetWindowPos(g_fl->hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    MoveSizeByScreen(g_fl->hwnd, x, y, w, h, SWP_NOZORDER);
     LayoutPanes(g_fl->hwnd);
-    PinAboveDesktop(g_fl->hwnd);
+    AttachToDesktop(g_fl->hwnd);
 }
