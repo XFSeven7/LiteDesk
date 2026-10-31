@@ -168,8 +168,9 @@ void SizeListToClient(WinCtx* ctx, HWND hwnd) {
 }
 
 HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
+    // 不要 WS_SYSMENU：标题栏无关闭按钮；隐藏走托盘/空白菜单
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kClassName, ctx->title,
-                                WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_CLIPCHILDREN,
+                                WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_CLIPCHILDREN,
                                 ctx->defX, ctx->defY, ctx->defW, ctx->defH,
                                 nullptr, nullptr, inst, ctx);
     if (!hwnd) return nullptr;
