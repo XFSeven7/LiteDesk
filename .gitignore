@@ -1,0 +1,15 @@
+# 构建产物
+/build/
+/out/
+/bin/
+/obj/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.aps
+
+# 日志与本地数据（若误放在仓库目录）
+*.log
+.vs/
