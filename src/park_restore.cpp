@@ -394,6 +394,43 @@ ParkResult RestoreAllAt(const std::wstring& parkedDir,
         }
     }
 
+    // 清扫 Parked 中未入清单的孤儿（崩溃于收纳中途 / manifest 被覆盖），移回备用桌面
+    {
+        const std::wstring desktop = fallbackDesktop.empty() ? GetDesktopPath() : fallbackDesktop;
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = FindFirstFileW(JoinPath(parkedDir, L"*").c_str(), &fd);
+        std::vector<std::wstring> orphans;
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                const std::wstring name = fd.cFileName;
+                if (name == L"." || name == L"..")
+                    continue;
+                const std::wstring p = JoinPath(parkedDir, name);
+                bool pending = false;  // 已在重试队列的失败项不重复处理
+                for (const ManifestEntry& m : remaining)
+                    pending = pending || _wcsicmp(m.parkedPath.c_str(), p.c_str()) == 0;
+                if (!pending)
+                    orphans.push_back(name);
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        for (const std::wstring& name : orphans) {
+            const std::wstring src = JoinPath(parkedDir, name);
+            const std::wstring dst = JoinPath(desktop, UniqueNameInDir(desktop, name));
+            LogError((L"Parked 中发现未入清单项，移回桌面：" + src).c_str());
+            if (MoveOne(src, dst)) {
+                ++r.moved;
+            } else {
+                LogMoveFail(L"恢复", src, dst);
+                ++r.failed;
+                // 补一条记录，下次还能重试
+                const DWORD attr = GetFileAttributesW(src.c_str());
+                const bool isDir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+                remaining.push_back({JoinPath(desktop, name), src, isDir, NowIso()});
+            }
+        }
+    }
+
     SaveManifestAt(manifestPath, remaining);
     if (r.failed == 0)
         SetFlagAt(flagPath, false);

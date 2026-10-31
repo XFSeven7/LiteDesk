@@ -43,7 +43,8 @@ static void TestParkRestore() {
         std::vector<ManifestEntry> in = {
             {L"C:\\a\\\"q\".txt", L"D:\\p\\中文 (1).txt", true, L"2026-11-01T00:00:00Z"}};
         const std::wstring mp = root + L"\\rt.json";
-        assert(SaveManifestAt(mp, in));
+        const bool saved = SaveManifestAt(mp, in);
+        assert(saved);
         std::vector<ManifestEntry> out;
         assert(LoadManifestAt(mp, out));
         assert(out.size() == 1u);
@@ -90,6 +91,19 @@ static void TestParkRestore() {
     assert(rr.failed == 0 && rr.moved == pr.moved);
     assert(exists(desk + L"\\doc.txt") && exists(desk + L"\\FolderA"));
     assert(ScanDesktop(parked).empty());
+    assert(!exists(flag));
+
+    // 孤儿清扫：manifest 有效，但 Parked 里多出一个未入清单的文件
+    pr = ParkNonAppsAt(desk, parked, manifest, flag, ScanDesktop(desk));
+    assert(pr.failed == 0 && pr.moved >= 1);
+    touch(desk + L"\\stray.txt", "desk-copy");  // 桌面已有同名，孤儿应改名
+    touch(parked + L"\\stray.txt", "stray");    // 不在 manifest 中
+    rr = RestoreAllAt(parked, manifest, flag, desk);
+    assert(rr.failed == 0 && rr.moved == pr.moved + 1);
+    assert(!exists(parked + L"\\stray.txt"));
+    assert(ScanDesktop(parked).empty());
+    assert(readAll(desk + L"\\stray.txt") == "desk-copy");
+    assert(readAll(desk + L"\\stray (1).txt") == "stray");
     assert(!exists(flag));
 
     std::filesystem::remove_all(root);

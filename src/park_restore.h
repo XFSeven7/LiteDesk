@@ -32,7 +32,7 @@ ParkResult ParkNonAppsAt(const std::wstring& desktop,
                          const std::wstring& manifestPath,
                          const std::wstring& flagPath,
                          const std::vector<DeskItem>& items);
-// fallbackDesktop 仅在 manifest 损坏时使用；为空则取真实桌面
+// fallbackDesktop 用于 manifest 损坏、以及 Parked 中未入清单的孤儿项；为空则取真实桌面
 ParkResult RestoreAllAt(const std::wstring& parkedDir,
                         const std::wstring& manifestPath,
                         const std::wstring& flagPath,
