@@ -168,15 +168,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         wpos->flags &= ~SWP_NOZORDER;
         break;
     }
-    case WM_MOVING:
-        ApplySnap(hwnd, reinterpret_cast<RECT*>(lp));
-        return TRUE;
+    // 拖动中不吸附（否则会粘在边缘拖不动）；松手时若靠近边缘再吸住
     case WM_EXITSIZEMOVE: {
         RECT r{};
         if (GetWindowRect(hwnd, &r)) {
             ApplySnap(hwnd, &r);
-            SetWindowPos(hwnd, HWND_BOTTOM, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                         SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(hwnd, nullptr, r.left, r.top, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
         FloatLists_SavePlacement();
         return 0;
