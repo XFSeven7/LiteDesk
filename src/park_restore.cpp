@@ -38,6 +38,20 @@ bool PathExists(const std::wstring& p) {
     return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
+// Parked 里是否有任何条目（含隐藏/系统项，不能用会过滤它们的 ScanDesktop）
+bool HasAnyEntry(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd{};
+    const HANDLE h = FindFirstFileW(JoinPath(dir, L"*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    bool any = false;
+    do {
+        any = wcscmp(fd.cFileName, L".") != 0 && wcscmp(fd.cFileName, L"..") != 0;
+    } while (!any && FindNextFileW(h, &fd));
+    FindClose(h);
+    return any;
+}
+
 std::wstring NowIso() {
     SYSTEMTIME st{};
     GetSystemTime(&st);
@@ -365,7 +379,7 @@ ParkResult RestoreAllAt(const std::wstring& parkedDir,
 
     if (!PathExists(manifestPath) || !LoadManifestAt(manifestPath, entries)) {
         // manifest 不存在且 Parked 为空：无事可做
-        if (!ScanDesktop(parkedDir).empty() || PathExists(manifestPath))
+        if (HasAnyEntry(parkedDir) || PathExists(manifestPath))
             r = RestoreByEnumerating(parkedDir, fallbackDesktop.empty() ? GetDesktopPath()
                                                                         : fallbackDesktop);
         if (r.failed == 0) {
@@ -443,8 +457,9 @@ ParkResult RestoreAllAt(const std::wstring& parkedDir,
 bool NeedsCrashRecoveryAt(const std::wstring& parkedDir,
                           const std::wstring& manifestPath,
                           const std::wstring& flagPath) {
-    (void)parkedDir;
     if (PathExists(flagPath))
+        return true;
+    if (HasAnyEntry(parkedDir))  // 设计 §3.3：Parked 非空即视为需要恢复
         return true;
     std::vector<ManifestEntry> entries;
     if (!LoadManifestAt(manifestPath, entries))

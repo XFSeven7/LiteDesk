@@ -38,8 +38,10 @@ bool App::Init(HINSTANCE inst) {
     wc.hInstance = inst;
     wc.lpszClassName = kMainClass;
     if (!RegisterClassW(&wc)) return false;
-    // 仅消息窗：不可见、不进任务栏，只收托盘与悬浮窗回传的消息
-    hwnd_ = CreateWindowExW(0, kMainClass, L"LiteDesk", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, this);
+    // 不用 HWND_MESSAGE：消息窗收不到广播（TaskbarCreated / WM_ENDSESSION）。
+    // 改用永不显示的顶层弹出窗（0 尺寸、工具窗样式，不进任务栏）
+    hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kMainClass, L"LiteDesk", WS_POPUP, 0, 0, 0, 0,
+                            nullptr, nullptr, inst, this);
     if (!hwnd_) return false;
     taskbarCreatedMsg_ = RegisterWindowMessageW(L"TaskbarCreated");
 
@@ -188,6 +190,18 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case FL_WM_RESTORE:
     case FL_WM_HIDE:
         app->OnFolderEmptyCmd(msg);
+        return 0;
+    case WM_QUERYENDSESSION:
+        return TRUE;  // 不阻止注销/关机
+    case WM_ENDSESSION:
+        // 会话结束时进程可能被直接终止，不会走 Shutdown：先停监视并还原桌面
+        if (wp) {
+            KillTimer(hwnd, kDebounceTimer);
+            Watcher_Stop();
+            app->organized_ = false;
+            app->watching_ = false;
+            RestoreAll();
+        }
         return 0;
     }
     // 资源管理器重启后托盘图标会丢，需重新添加

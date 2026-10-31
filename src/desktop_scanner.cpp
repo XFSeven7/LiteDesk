@@ -45,6 +45,9 @@ std::vector<DeskItem> ScanDesktop(const std::wstring& desktopPath) {
             continue;
         if (_wcsicmp(name.c_str(), L"desktop.ini") == 0)
             continue;
+        // 隐藏/系统项不由用户管理，不收纳
+        if (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+            continue;
 
         DeskItem item;
         item.name = name;

@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
+# 源文件为无 BOM 的 UTF-8，MSVC 默认按本地代码页解析会让中文字面量乱码
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
 add_executable(LiteDeskTests
     tests/test_main.cpp
     src/util_path.cpp

@@ -8,6 +8,7 @@
 
 #include "../src/desktop_scanner.h"
 #include "../src/park_restore.h"
+#include "../src/util_log.h"
 #include "../src/util_path.h"
 
 static void touch(const std::wstring& p, const char* content = "x") {
@@ -159,6 +160,29 @@ int main() {
     assert(found(L"c.txt", DeskKind::File));
     for (const auto& it : scanned)
         assert(it.name != L"desktop.ini");
+
+    // 隐藏/系统项不应被扫描收纳
+    {
+        const auto hs = GetLiteDeskRoot() + L"\\_test_scan_hidden";
+        std::filesystem::remove_all(hs);
+        EnsureDir(hs);
+        touch(hs + L"\\vis.txt");
+        touch(hs + L"\\hid.txt");
+        touch(hs + L"\\sys.txt");
+        SetFileAttributesW((hs + L"\\hid.txt").c_str(), FILE_ATTRIBUTE_HIDDEN);
+        SetFileAttributesW((hs + L"\\sys.txt").c_str(), FILE_ATTRIBUTE_SYSTEM);
+        const auto r = ScanDesktop(hs);
+        assert(r.size() == 1u && r[0].name == L"vis.txt");
+        std::filesystem::remove_all(hs);
+    }
+
+    // 日志：超长路径 + 中文不得崩溃，且按 UTF-8 落盘
+    {
+        LogError((L"超长路径测试：" + std::wstring(5000, L'x')).c_str());
+        const std::string log = readAll(GetLogsDir() + L"\\litedesk.log");
+        assert(log.find("\xE8\xB6\x85\xE9\x95\xBF\xE8\xB7\xAF\xE5\xBE\x84") != std::string::npos);  // "超长路径" UTF-8
+        assert(log.find(std::string(5000, 'x')) != std::string::npos);
+    }
 
     TestParkRestore();
 
