@@ -1,6 +1,7 @@
 #include "float_lists.h"
 
 #include <commctrl.h>
+#include <commoncontrols.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <uxtheme.h>
@@ -29,11 +30,12 @@ FloatLists* g_fl = nullptr;
 bool g_classRegistered = false;
 bool g_comInited = false;
 IContextMenu2* g_cm2 = nullptr;
-HIMAGELIST g_sysImages = nullptr;
+HIMAGELIST g_sysImages = nullptr;  // 系统图标表（大图标，勿 Destroy）
+HFONT g_listFont = nullptr;
 
-int g_splitX = 280;          // 分割条左侧宽度（客户区坐标）
+int g_splitX = 360;          // 分割条左侧宽度（客户区坐标）
 bool g_draggingSplit = false;
-int g_defX = 80, g_defY = 80, g_defW = 560, g_defH = 480;
+int g_defX = 80, g_defY = 80, g_defW = 720, g_defH = 560;
 bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D 收起）
 bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
 constexpr UINT_PTR kKeepAliveTimer = 42;
@@ -45,9 +47,39 @@ constexpr COLORREF kSplitBk = RGB(48, 48, 48);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
 constexpr int kSnapPx = 16;
 constexpr int kSplitW = 5;
-constexpr int kMinPane = 80;
-constexpr int kDragH = 12;   // 无标题栏：顶部拖动条高度
+constexpr int kMinPane = 100;
+constexpr int kDragH = 16;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
+constexpr int kFontPt = 16;  // 列表字号（磅）
+
+HFONT MakeListFont(HWND hwnd) {
+    int dpi = 96;
+    using FnDpi = UINT(WINAPI*)(HWND);
+    if (auto p = reinterpret_cast<FnDpi>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"))) {
+        if (hwnd) dpi = static_cast<int>(p(hwnd));
+    }
+    LOGFONTW lf{};
+    lf.lfHeight = -MulDiv(kFontPt, dpi, 72);
+    lf.lfWeight = FW_NORMAL;
+    lf.lfQuality = CLEARTYPE_QUALITY;
+    lf.lfCharSet = DEFAULT_CHARSET;
+    wcscpy_s(lf.lfFaceName, L"Segoe UI");
+    return CreateFontIndirectW(&lf);
+}
+
+HIMAGELIST LoadBigSysImages() {
+    // 48×48，比 SMALL(16) 清晰得多；索引与 SYSICONINDEX 通用
+    IImageList* il = nullptr;
+    if (SUCCEEDED(SHGetImageList(SHIL_EXTRALARGE, IID_PPV_ARGS(&il))) && il)
+        return reinterpret_cast<HIMAGELIST>(il);
+    if (SUCCEEDED(SHGetImageList(SHIL_LARGE, IID_PPV_ARGS(&il))) && il)
+        return reinterpret_cast<HIMAGELIST>(il);
+    SHFILEINFOW sfi{};
+    return reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(
+        L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
+        SHGFI_SYSICONINDEX | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES));
+}
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -224,10 +256,12 @@ HWND CreateList(HINSTANCE inst, HWND parent) {
     ListView_SetBkColor(list, kListBk);
     ListView_SetTextBkColor(list, kListBk);
     ListView_SetTextColor(list, kTextColor);
+    if (g_listFont) SendMessageW(list, WM_SETFONT, reinterpret_cast<WPARAM>(g_listFont), TRUE);
+    // 大图标塞进 SMALL 槽：Report 行高会跟着变高
     if (g_sysImages) ListView_SetImageList(list, g_sysImages, LVSIL_SMALL);
     LVCOLUMNW col{};
     col.mask = LVCF_WIDTH;
-    col.cx = 200;
+    col.cx = 280;
     ListView_InsertColumn(list, 0, &col);
     return list;
 }
@@ -242,7 +276,7 @@ void FillList(Pane* pane, const std::vector<std::wstring>& paths) {
         if (attr == INVALID_FILE_ATTRIBUTES) attr = FILE_ATTRIBUTE_NORMAL;
         SHFILEINFOW sfi{};
         SHGetFileInfoW(paths[i].c_str(), attr, &sfi, sizeof(sfi),
-                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
+                       SHGFI_SYSICONINDEX | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES);
         std::wstring name = FileNameOf(paths[i]);
         LVITEMW it{};
         it.mask = LVIF_TEXT | LVIF_IMAGE;
@@ -442,10 +476,7 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         g_classRegistered = true;
     }
 
-    SHFILEINFOW sfi{};
-    g_sysImages = reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(
-        L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
-        SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
+    g_sysImages = LoadBigSysImages();
 
     // 顶层半透明窗（不挂 DefView：挂上去滚动条会花、布局错乱）
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
@@ -455,6 +486,11 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
     // 定时拉回：挡住 Win+D / 右下角 Show Desktop 的收起
     SetTimer(hwnd, kKeepAliveTimer, kKeepAliveMs, nullptr);
+    if (g_listFont) {
+        DeleteObject(g_listFont);
+        g_listFont = nullptr;
+    }
+    g_listFont = MakeListFont(hwnd);
 
     g_folder.list = CreateList(inst, hwnd);
     g_file.list = CreateList(inst, hwnd);
@@ -487,6 +523,11 @@ void FloatLists_Destroy(FloatLists* fl) {
     g_folder.list = g_file.list = nullptr;
     g_folder.paths.clear();
     g_file.paths.clear();
+    g_sysImages = nullptr;  // 系统共享表，不 Destroy
+    if (g_listFont) {
+        DeleteObject(g_listFont);
+        g_listFont = nullptr;
+    }
     if (g_comInited) {
         CoUninitialize();
         g_comInited = false;
