@@ -84,11 +84,15 @@ void App::RefreshListsFromManifest() {
 void App::Organize() {
     // 先清掉旧会话残留的防抖定时器，避免重启监视后误触发
     KillTimer(hwnd_, kDebounceTimer);
+    // 先亮窗再收纳，避免「点了整理却半天没窗」
+    FloatLists_Show(&fl_, true);
+    listsVisible_ = true;
+    if (fl_.folderHwnd) UpdateWindow(fl_.folderHwnd);
+    if (fl_.fileHwnd) UpdateWindow(fl_.fileHwnd);
+
     const std::wstring desk = GetDesktopPath();
     ParkResult r = ParkNonApps(desk, ScanDesktop(desk));
     RefreshListsFromManifest();
-    FloatLists_Show(&fl_, true);
-    listsVisible_ = true;
     if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目整理失败，详情见日志");
     // 进入整理会话：列表已显示即视为已整理；监视是否成功单独记录（重复整理时 Start 会先停旧线程）
     organized_ = true;

@@ -61,10 +61,9 @@ std::wstring NowIso() {
     return buf;
 }
 
-// 单项移动：允许跨卷复制，写透
+// 单项移动：允许跨卷复制；不同 WRITE_THROUGH，避免每项都刷盘导致整理卡住
 bool MoveOne(const std::wstring& src, const std::wstring& dst) {
-    return MoveFileExW(src.c_str(), dst.c_str(),
-                       MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH) != 0;
+    return MoveFileExW(src.c_str(), dst.c_str(), MOVEFILE_COPY_ALLOWED) != 0;
 }
 
 void LogMoveFail(const wchar_t* what, const std::wstring& src, const std::wstring& dst) {

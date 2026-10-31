@@ -268,10 +268,15 @@ HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
 
 void FillList(WinCtx* ctx, const std::vector<std::wstring>& paths) {
     ctx->paths = paths;
+    SendMessageW(ctx->list, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(ctx->list);
     for (int i = 0; i < (int)paths.size(); ++i) {
+        // USEFILEATTRIBUTES：不读盘抽自定义图标，整理后列表填充快很多
+        DWORD attr = GetFileAttributesW(paths[i].c_str());
+        if (attr == INVALID_FILE_ATTRIBUTES) attr = FILE_ATTRIBUTE_NORMAL;
         SHFILEINFOW sfi{};
-        SHGetFileInfoW(paths[i].c_str(), 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
+        SHGetFileInfoW(paths[i].c_str(), attr, &sfi, sizeof(sfi),
+                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
         std::wstring name = FileNameOf(paths[i]);
         LVITEMW it{};
         it.mask = LVIF_TEXT | LVIF_IMAGE;
@@ -281,6 +286,8 @@ void FillList(WinCtx* ctx, const std::vector<std::wstring>& paths) {
         ListView_InsertItem(ctx->list, &it);
     }
     ListView_SetColumnWidth(ctx->list, 0, LVSCW_AUTOSIZE_USEHEADER);
+    SendMessageW(ctx->list, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(ctx->list, nullptr, TRUE);
 }
 
 }  // namespace
