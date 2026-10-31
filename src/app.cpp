@@ -9,8 +9,14 @@
 #include "util_log.h"
 #include "util_path.h"
 
+#include "watcher.h"
+
 namespace {
 const wchar_t kMainClass[] = L"LiteDeskMain";
+// 监视线程 → UI 线程的变化通知；UI 侧用定时器合并 300ms 内的连续事件
+constexpr UINT WM_DESKTOP_CHANGED = WM_APP + 20;
+constexpr UINT_PTR kDebounceTimer = 1;
+constexpr UINT kDebounceMs = 300;
 }
 
 bool App::Init(HINSTANCE inst) {
@@ -47,6 +53,10 @@ bool App::Init(HINSTANCE inst) {
 }
 
 void App::Shutdown() {
+    // 先停监视，免得还原回桌面的项又被 park
+    if (hwnd_) KillTimer(hwnd_, kDebounceTimer);
+    Watcher_Stop();
+    organized_ = false;
     // 正常退出也还原桌面；失败项留在 manifest，下次启动自动重试
     if (NeedsCrashRecovery()) RestoreAll();
     if (hwnd_) Tray_Remove(hwnd_);
@@ -73,9 +83,27 @@ void App::Organize() {
     FloatLists_Show(&fl_, true);
     listsVisible_ = true;
     if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目整理失败，详情见日志");
+    // 进入整理会话：开始监视桌面（重复整理时 Start 会先停旧线程）
+    organized_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED);
+}
+
+void App::OnDesktopChanged() {
+    if (!organized_) return;  // 未整理：忽略
+    const std::wstring desk = GetDesktopPath();
+    std::vector<DeskItem> items = ScanDesktop(desk);
+    bool hasNonApp = false;
+    for (const DeskItem& it : items) hasNonApp = hasNonApp || it.kind != DeskKind::App;
+    if (!hasNonApp) return;  // 只有应用（含 park 自身引起的变化）：不动，也避免反复触发
+    ParkResult r = ParkNonApps(desk, items);
+    RefreshListsFromManifest();
+    if (r.failed > 0) LogError(L"自动收纳部分失败（可能文件仍被占用）");
 }
 
 void App::Restore() {
+    // 先停监视，免得还原回桌面的项又被 park
+    KillTimer(hwnd_, kDebounceTimer);
+    Watcher_Stop();
+    organized_ = false;
     ParkResult r = RestoreAll();
     RefreshListsFromManifest();  // 失败项仍留在 manifest，列表保持可见
     if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目还原失败，详情见日志");
@@ -116,6 +144,16 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_TRAY_EXIT: PostQuitMessage(0); break;
         }
         return 0;
+    case WM_DESKTOP_CHANGED:
+        SetTimer(hwnd, kDebounceTimer, kDebounceMs, nullptr);  // 重置即防抖
+        return 0;
+    case WM_TIMER:
+        if (wp == kDebounceTimer) {
+            KillTimer(hwnd, kDebounceTimer);
+            app->OnDesktopChanged();
+            return 0;
+        }
+        break;
     case FL_WM_REFRESH:
     case FL_WM_RESTORE:
     case FL_WM_HIDE:

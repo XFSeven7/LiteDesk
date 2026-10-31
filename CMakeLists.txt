@@ -19,6 +19,7 @@ add_executable(LiteDesk WIN32
     src/app.cpp
     src/tray_ui.cpp
     src/float_lists.cpp
+    src/watcher.cpp
     src/util_path.cpp
     src/util_log.cpp
     src/desktop_scanner.cpp

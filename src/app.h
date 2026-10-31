@@ -14,6 +14,8 @@ public:
     void ToggleLists();         // 显示/隐藏两个列表窗
     // 悬浮窗空白菜单回传（FL_WM_REFRESH / FL_WM_RESTORE / FL_WM_HIDE）
     void OnFolderEmptyCmd(UINT msg);
+    // 整理会话中桌面出现变化（已防抖）：只 park 新出现的非应用并刷新列表
+    void OnDesktopChanged();
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -23,5 +25,7 @@ private:
     HWND hwnd_ = nullptr;
     FloatLists fl_{};
     bool listsVisible_ = false;
+    // 是否处于整理会话（监视中）。不用 session.flag：桌面本就为空时 flag 会被清掉
+    bool organized_ = false;
     UINT taskbarCreatedMsg_ = 0;
 };
