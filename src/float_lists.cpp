@@ -38,6 +38,47 @@ HIMAGELIST g_sysImages = nullptr; // 系统小图标列表（共享，勿销毁�
 constexpr BYTE kWindowAlpha = 210;
 constexpr COLORREF kListBk = RGB(16, 16, 16);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
+constexpr int kSnapPx = 16;  // 吸附阈值
+
+// 拖动时吸附到工作区边缘，以及另一个悬浮窗边缘/对齐
+void ApplySnap(HWND self, RECT* pr) {
+    if (!pr) return;
+    const int w = pr->right - pr->left;
+    const int h = pr->bottom - pr->top;
+    if (w <= 0 || h <= 0) return;
+
+    POINT c{(pr->left + pr->right) / 2, (pr->top + pr->bottom) / 2};
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(MonitorFromPoint(c, MONITOR_DEFAULTTONEAREST), &mi)) return;
+    const RECT& wa = mi.rcWork;
+
+    auto nearEq = [](int a, int b) { return abs(a - b) <= kSnapPx; };
+
+    if (nearEq(pr->left, wa.left)) { pr->left = wa.left; pr->right = pr->left + w; }
+    if (nearEq(pr->right, wa.right)) { pr->right = wa.right; pr->left = pr->right - w; }
+    if (nearEq(pr->top, wa.top)) { pr->top = wa.top; pr->bottom = pr->top + h; }
+    if (nearEq(pr->bottom, wa.bottom)) { pr->bottom = wa.bottom; pr->top = pr->bottom - h; }
+
+    HWND other = nullptr;
+    if (g_fl) {
+        if (self == g_fl->folderHwnd) other = g_fl->fileHwnd;
+        else if (self == g_fl->fileHwnd) other = g_fl->folderHwnd;
+    }
+    if (!other || !IsWindowVisible(other)) return;
+
+    RECT o{};
+    if (!GetWindowRect(other, &o)) return;
+    // 贴边：左右/上下紧挨
+    if (nearEq(pr->left, o.right)) { pr->left = o.right; pr->right = pr->left + w; }
+    if (nearEq(pr->right, o.left)) { pr->right = o.left; pr->left = pr->right - w; }
+    if (nearEq(pr->top, o.bottom)) { pr->top = o.bottom; pr->bottom = pr->top + h; }
+    if (nearEq(pr->bottom, o.top)) { pr->bottom = o.top; pr->top = pr->bottom - h; }
+    // 齐边：左对齐 / 顶对齐等
+    if (nearEq(pr->left, o.left)) { pr->left = o.left; pr->right = pr->left + w; }
+    if (nearEq(pr->right, o.right)) { pr->right = o.right; pr->left = pr->right - w; }
+    if (nearEq(pr->top, o.top)) { pr->top = o.top; pr->bottom = pr->top + h; }
+    if (nearEq(pr->bottom, o.bottom)) { pr->bottom = o.bottom; pr->top = pr->bottom - h; }
+}
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -127,9 +168,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         wpos->flags &= ~SWP_NOZORDER;
         break;
     }
-    case WM_EXITSIZEMOVE:
+    case WM_MOVING:
+        ApplySnap(hwnd, reinterpret_cast<RECT*>(lp));
+        return TRUE;
+    case WM_EXITSIZEMOVE: {
+        RECT r{};
+        if (GetWindowRect(hwnd, &r)) {
+            ApplySnap(hwnd, &r);
+            SetWindowPos(hwnd, HWND_BOTTOM, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         FloatLists_SavePlacement();
         return 0;
+    }
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);  // 关闭仅隐藏，生命周期由 Destroy 管理
         return 0;
