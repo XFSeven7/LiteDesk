@@ -6,7 +6,8 @@ add_executable(LiteDeskTests
     tests/test_main.cpp
     src/util_path.cpp
     src/util_log.cpp
-    src/desktop_scanner.cpp)
+    src/desktop_scanner.cpp
+    src/park_restore.cpp)
 # 控制台测试子系统
 set_target_properties(LiteDeskTests PROPERTIES WIN32_EXECUTABLE FALSE)
 target_compile_definitions(LiteDeskTests PRIVATE UNICODE _UNICODE)

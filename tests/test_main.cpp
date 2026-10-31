@@ -1,16 +1,105 @@
+// Release 构建默认定义 NDEBUG 会让 assert 失效，自检必须保持生效
+#undef NDEBUG
 #include <cassert>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 #include "../src/desktop_scanner.h"
+#include "../src/park_restore.h"
 #include "../src/util_path.h"
 
-static void touch(const std::wstring& p) {
+static void touch(const std::wstring& p, const char* content = "x") {
     std::ofstream f(p, std::ios::binary);
-    f << "x";
+    f << content;
+}
+
+static std::string readAll(const std::wstring& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(f), {});
+}
+
+static bool exists(const std::wstring& p) {
+    return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// 用临时桌面目录自检 park/restore，不触碰真桌面
+static void TestParkRestore() {
+    const std::wstring root = GetLiteDeskRoot() + L"\\_test_park";
+    std::filesystem::remove_all(root);
+    const std::wstring desk = root + L"\\desk";
+    const std::wstring parked = root + L"\\Parked";
+    const std::wstring manifest = root + L"\\manifest.json";
+    const std::wstring flag = root + L"\\session.flag";
+    EnsureDir(desk);
+    touch(desk + L"\\app.lnk");
+    touch(desk + L"\\doc.txt");
+    EnsureDir(desk + L"\\FolderA");
+    touch(desk + L"\\FolderA\\inner.txt");
+
+    // manifest 往返：特殊字符（引号、反斜杠、中文）不能丢
+    {
+        std::vector<ManifestEntry> in = {
+            {L"C:\\a\\\"q\".txt", L"D:\\p\\中文 (1).txt", true, L"2026-11-01T00:00:00Z"}};
+        const std::wstring mp = root + L"\\rt.json";
+        assert(SaveManifestAt(mp, in));
+        std::vector<ManifestEntry> out;
+        assert(LoadManifestAt(mp, out));
+        assert(out.size() == 1u);
+        assert(out[0].originalPath == in[0].originalPath);
+        assert(out[0].parkedPath == in[0].parkedPath);
+        assert(out[0].isDirectory && out[0].parkedAtIso == in[0].parkedAtIso);
+    }
+
+    // Park：仅剩 app.lnk
+    auto items = ScanDesktop(desk);
+    ParkResult pr = ParkNonAppsAt(desk, parked, manifest, flag, items);
+    assert(pr.moved == 2 && pr.failed == 0);
+    assert(exists(desk + L"\\app.lnk"));
+    assert(!exists(desk + L"\\doc.txt") && !exists(desk + L"\\FolderA"));
+    assert(exists(parked + L"\\doc.txt") && exists(parked + L"\\FolderA\\inner.txt"));
+    assert(exists(flag));
+
+    // 不 Restore，只留 flag 与 manifest：应判定需要崩溃恢复
+    assert(NeedsCrashRecoveryAt(parked, manifest, flag));
+
+    // Restore：文件回桌面，flag 删除，Parked 空
+    ParkResult rr = RestoreAllAt(parked, manifest, flag);
+    assert(rr.moved == 2 && rr.failed == 0);
+    assert(exists(desk + L"\\doc.txt") && exists(desk + L"\\FolderA\\inner.txt"));
+    assert(!exists(flag));
+    assert(ScanDesktop(parked).empty());
+    assert(!NeedsCrashRecoveryAt(parked, manifest, flag));
+
+    // 冲突：桌面已有同名 doc.txt，restore 不得覆盖
+    touch(desk + L"\\doc.txt", "old");
+    pr = ParkNonAppsAt(desk, parked, manifest, flag, ScanDesktop(desk));
+    assert(pr.moved == 2);
+    touch(desk + L"\\doc.txt", "new");
+    rr = RestoreAllAt(parked, manifest, flag);
+    assert(rr.failed == 0);
+    assert(readAll(desk + L"\\doc.txt") == "new");
+    assert(readAll(desk + L"\\doc (1).txt") == "old");
+
+    // manifest 损坏：枚举 Parked 移回备用桌面
+    pr = ParkNonAppsAt(desk, parked, manifest, flag, ScanDesktop(desk));
+    assert(pr.moved >= 3);
+    touch(manifest, "{ not json");
+    rr = RestoreAllAt(parked, manifest, flag, desk);
+    assert(rr.failed == 0 && rr.moved == pr.moved);
+    assert(exists(desk + L"\\doc.txt") && exists(desk + L"\\FolderA"));
+    assert(ScanDesktop(parked).empty());
+    assert(!exists(flag));
+
+    std::filesystem::remove_all(root);
 }
 
 int main() {
+    // 先清理上次遗留，保证自检可重复运行
+    for (const wchar_t* d : {L"\\_test_unique", L"\\_test_ensure", L"\\_test_scan"})
+        std::filesystem::remove_all(GetLiteDeskRoot() + d);
+
     const auto root = GetLiteDeskRoot() + L"\\_test_unique";
     EnsureDir(root);
     touch(root + L"\\a.txt");
@@ -56,6 +145,8 @@ int main() {
     assert(found(L"c.txt", DeskKind::File));
     for (const auto& it : scanned)
         assert(it.name != L"desktop.ini");
+
+    TestParkRestore();
 
     // 清理测试目录（可用简单递归删除或留给手工）
     return 0;
