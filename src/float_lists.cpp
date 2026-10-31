@@ -3,8 +3,11 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <uxtheme.h>
 
 #include "util_path.h"
+
+#pragma comment(lib, "uxtheme.lib")
 
 // 启用 Common Controls v6 视觉样式（MSVC）
 #ifdef _MSC_VER
@@ -30,6 +33,10 @@ bool g_classRegistered = false;
 bool g_comInited = false;         // 本模块是否调用了 CoInitializeEx
 IContextMenu2* g_cm2 = nullptr;   // 右键菜单展示期间，用于转发自绘消息
 HIMAGELIST g_sysImages = nullptr; // 系统小图标列表（共享，勿销毁）
+
+// 色键透明：列表背景用此色，分层窗将该色抠透（略增合成开销）
+constexpr COLORREF kClearKey = RGB(255, 0, 255);
+constexpr COLORREF kTextColor = RGB(255, 255, 255);
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
 
@@ -125,9 +132,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CLOSE:
         ShowWindow(hwnd, SW_HIDE);  // 关闭仅隐藏，生命周期由 Destroy 管理
         return 0;
+    case WM_ERASEBKGND: {
+        // 客户区刷成色键色，才能被 LWA_COLORKEY 抠掉
+        RECT rc{};
+        GetClientRect(hwnd, &rc);
+        HBRUSH br = CreateSolidBrush(kClearKey);
+        FillRect(reinterpret_cast<HDC>(wp), &rc, br);
+        DeleteObject(br);
+        return 1;
+    }
     case WM_NOTIFY: {
+        auto* nmhdr = reinterpret_cast<NMHDR*>(lp);
+        if (!ctx || nmhdr->hwndFrom != ctx->list) break;
+        if (nmhdr->code == NM_CUSTOMDRAW) {
+            auto* cd = reinterpret_cast<LPNMLVCUSTOMDRAW>(lp);
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
+            if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                cd->clrText = kTextColor;
+                cd->clrTextBk = kClearKey;
+                return CDRF_NEWFONT;
+            }
+            return CDRF_DODEFAULT;
+        }
         auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lp);
-        if (!ctx || nm->hdr.hwndFrom != ctx->list) break;
         if (nm->hdr.code == NM_DBLCLK) {
             if (nm->iItem >= 0 && nm->iItem < (int)ctx->paths.size()) {
                 const std::wstring& p = ctx->paths[nm->iItem];
@@ -168,23 +195,29 @@ void SizeListToClient(WinCtx* ctx, HWND hwnd) {
 }
 
 HWND CreateOne(HINSTANCE inst, WinCtx* ctx) {
-    // 不要 WS_SYSMENU：标题栏无关闭按钮；隐藏走托盘/空白菜单
-    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, kClassName, ctx->title,
+    // 分层 + 色键透明；不要 WS_SYSMENU（无关闭按钮）
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, ctx->title,
                                 WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_CLIPCHILDREN,
                                 ctx->defX, ctx->defY, ctx->defW, ctx->defH,
                                 nullptr, nullptr, inst, ctx);
     if (!hwnd) return nullptr;
+    SetLayeredWindowAttributes(hwnd, kClearKey, 0, LWA_COLORKEY);
 
-    // 父窗 Create 期间的 WM_SIZE 早于 list 创建，这里必须按客户区再铺一次
-    ctx->list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
+    // 无表头，避免不透明表头挡壁纸；父窗 Create 的 WM_SIZE 早于 list，稍后 SizeListToClient
+    ctx->list = CreateWindowExW(0, WC_LISTVIEWW, L"",
+                                WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_NOCOLUMNHEADER |
+                                    LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
                                 0, 0, 10, 10, hwnd, nullptr, inst, nullptr);
     if (!ctx->list) { DestroyWindow(hwnd); return nullptr; }
     ListView_SetExtendedListViewStyle(ctx->list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+    SetWindowTheme(ctx->list, L"", L"");  // 关掉主题，才能真正用自定义背景色
+    ListView_SetBkColor(ctx->list, kClearKey);
+    ListView_SetTextBkColor(ctx->list, kClearKey);
+    ListView_SetTextColor(ctx->list, kTextColor);
     if (g_sysImages) ListView_SetImageList(ctx->list, g_sysImages, LVSIL_SMALL);
 
     LVCOLUMNW col{};
-    col.mask = LVCF_TEXT | LVCF_WIDTH;
-    col.pszText = const_cast<wchar_t*>(L"名称");
+    col.mask = LVCF_WIDTH;
     col.cx = ctx->defW;
     ListView_InsertColumn(ctx->list, 0, &col);
     SizeListToClient(ctx, hwnd);

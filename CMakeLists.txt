@@ -33,4 +33,4 @@ add_executable(LiteDesk WIN32
     src/desktop_scanner.cpp
     src/park_restore.cpp)
 target_compile_definitions(LiteDesk PRIVATE UNICODE _UNICODE)
-target_link_libraries(LiteDesk PRIVATE comctl32 shell32 ole32)
+target_link_libraries(LiteDesk PRIVATE comctl32 shell32 ole32 uxtheme)
