@@ -10,6 +10,8 @@ public:
     bool Init(HINSTANCE inst);  // 启动恢复、建窗、加托盘
     void Shutdown();            // 还原桌面并销毁资源
     void Organize();            // 扫描 → 收纳 → 刷新列表 → 显示
+    // 本机压测一键整理各阶段耗时（毫秒），结果写入 outPath（UTF-8 文本）；测完会 Restore
+    bool BenchOrganize(const std::wstring& outPath);
     void Restore();             // 还原桌面并清空列表
     void ToggleLists();         // 显示/隐藏整理悬浮窗
     // 悬浮窗空白菜单回传（FL_WM_REFRESH / FL_WM_RESTORE / FL_WM_HIDE）

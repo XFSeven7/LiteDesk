@@ -1,5 +1,7 @@
 #include "app.h"
 
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -101,6 +103,64 @@ void App::Organize() {
         LogError(L"桌面监视不可用，自动收纳已停用");
         Tray_Balloon(hwnd_, L"LiteDesk", L"桌面监视启动失败，新文件不会自动收纳；可在列表空白处右键「刷新」");
     }
+}
+
+bool App::BenchOrganize(const std::wstring& outPath) {
+    LARGE_INTEGER freq{}, t0{}, t1{}, t2{}, t3{}, t4{}, t5{}, t6{};
+    QueryPerformanceFrequency(&freq);
+    auto ms = [&](LARGE_INTEGER a, LARGE_INTEGER b) {
+        return (b.QuadPart - a.QuadPart) * 1000.0 / freq.QuadPart;
+    };
+
+    KillTimer(hwnd_, kDebounceTimer);
+    QueryPerformanceCounter(&t0);
+
+    FloatLists_Show(&fl_, true);
+    listsVisible_ = true;
+    if (fl_.hwnd) UpdateWindow(fl_.hwnd);
+    QueryPerformanceCounter(&t1);  // 窗已显示（可能仍空）
+
+    const std::wstring desk = GetDesktopPath();
+    QueryPerformanceCounter(&t2);
+    auto items = ScanDesktop(desk);
+    QueryPerformanceCounter(&t3);
+    ParkResult r = ParkNonApps(desk, items);
+    QueryPerformanceCounter(&t4);
+    RefreshListsFromManifest();
+    QueryPerformanceCounter(&t5);
+
+    organized_ = true;
+    watchRetried_ = false;
+    watching_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
+    QueryPerformanceCounter(&t6);
+
+    // 写结果后立刻还原，避免压测弄乱桌面
+    Restore();
+
+    char buf[512];
+    sprintf_s(buf,
+              "organize_bench\n"
+              "show_ms=%.2f\n"
+              "get_desktop_ms=%.2f\n"
+              "scan_ms=%.2f\n"
+              "park_ms=%.2f\n"
+              "fill_ms=%.2f\n"
+              "watcher_ms=%.2f\n"
+              "to_show_ms=%.2f\n"
+              "to_content_ms=%.2f\n"
+              "total_ms=%.2f\n"
+              "items=%zu moved=%d failed=%d\n",
+              ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, t6),
+              ms(t0, t1), ms(t0, t5), ms(t0, t6), items.size(), r.moved, r.failed);
+
+    EnsureDir(GetLogsDir());
+    HANDLE f = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    WriteFile(f, buf, static_cast<DWORD>(strlen(buf)), &written, nullptr);
+    CloseHandle(f);
+    return true;
 }
 
 void App::OnWatchEnded() {
