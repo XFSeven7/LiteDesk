@@ -13,3 +13,7 @@
 # 日志与本地数据（若误放在仓库目录）
 *.log
 .vs/
+
+# 图标中间产物（保留 resources/litedesk.ico 与 assets/*.svg）
+assets/icon*.png
+assets/litedesk.ico
