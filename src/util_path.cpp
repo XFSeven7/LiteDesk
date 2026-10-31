@@ -89,8 +89,11 @@ std::wstring UniqueNameInDir(const std::wstring& dir, const std::wstring& desire
 bool EnsureDir(const std::wstring& path) {
     if (path.empty())
         return false;
-    if (PathExists(path))
-        return true;
+    const DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES) {
+        // 路径已存在：必须是目录；同名普通文件则失败且不删除
+        return (attr & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
     const int r = SHCreateDirectoryExW(nullptr, path.c_str(), nullptr);
     return r == ERROR_SUCCESS || r == ERROR_ALREADY_EXISTS;
 }
