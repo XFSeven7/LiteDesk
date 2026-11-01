@@ -27,7 +27,7 @@ bool Tray_Add(HWND hwnd, HINSTANCE inst) {
     // 资源里的 LiteDesk 闪电图标（由 SVG 栅格化）
     nid.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
     if (!nid.hIcon) nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-    lstrcpynW(nid.szTip, L"LiteDesk", ARRAYSIZE(nid.szTip));
+    lstrcpynW(nid.szTip, L"LiteDesk（双击整理）", ARRAYSIZE(nid.szTip));
     return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
 }
 
@@ -40,8 +40,6 @@ void Tray_ShowMenu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, ID_TRAY_ORGANIZE, L"一键整理");
-    AppendMenuW(menu, MF_STRING, ID_TRAY_RESTORE, L"还原桌面");
-    AppendMenuW(menu, MF_STRING, ID_TRAY_TOGGLE, L"显示/隐藏列表窗");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"退出");
 

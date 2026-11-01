@@ -67,8 +67,8 @@ void App::Shutdown() {
     Watcher_Stop();
     organized_ = false;
     watching_ = false;
-    // 正常退出也还原桌面；失败项留在 manifest，下次启动自动重试
-    if (NeedsCrashRecovery()) RestoreAll();
+    // 退出即还原桌面；失败项留在 manifest，下次启动自动重试
+    RestoreAll();
     if (hwnd_) Tray_Remove(hwnd_);
     FloatLists_Destroy(&fl_);
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
@@ -228,7 +228,7 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     switch (msg) {
     case WM_TRAYICON:
-        if (lp == WM_LBUTTONDBLCLK) app->ToggleLists();
+        if (lp == WM_LBUTTONDBLCLK) app->Organize();
         else if (lp == WM_RBUTTONUP) Tray_ShowMenu(hwnd);
         return 0;
     case WM_LITEDESK_CMD:
@@ -238,9 +238,7 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case ID_TRAY_ORGANIZE: app->Organize(); break;
-        case ID_TRAY_RESTORE: app->Restore(); break;
-        case ID_TRAY_TOGGLE: app->ToggleLists(); break;
-        case ID_TRAY_EXIT: PostQuitMessage(0); break;
+        case ID_TRAY_EXIT: PostQuitMessage(0); break;  // Shutdown 里会还原桌面
         }
         return 0;
     case WM_DESKTOP_CHANGED:
