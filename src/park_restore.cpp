@@ -1,14 +1,67 @@
 #include "park_restore.h"
 
+#include <shlobj.h>
 #include <windows.h>
 
 #include <fstream>
 #include <iterator>
+#include <vector>
 
 #include "util_log.h"
 #include "util_path.h"
 
 namespace {
+
+// ---------- 桌面重绘冻结 ----------
+// 慢感来自 Explorer：每 Move 一次就重排/淡入一个图标。冻结 SysListView 重绘，结束后再统一刷。
+
+void CollectDesktopListViews(std::vector<HWND>& out) {
+    auto take = [&](HWND host) {
+        if (!host) return;
+        HWND def = FindWindowExW(host, nullptr, L"SHELLDLL_DefView", nullptr);
+        if (!def) return;
+        HWND lv = FindWindowExW(def, nullptr, L"SysListView32", nullptr);
+        if (lv) out.push_back(lv);
+    };
+    take(FindWindowW(L"Progman", nullptr));
+    HWND w = nullptr;
+    while ((w = FindWindowExW(nullptr, w, L"WorkerW", nullptr)) != nullptr)
+        take(w);
+}
+
+struct DesktopFreeze {
+    std::vector<HWND> lists;
+    using SuspendFn = BOOL(WINAPI*)(BOOL, void*, BOOL, DWORD);
+    SuspendFn suspendFn = nullptr;
+    bool suspended = false;
+
+    DesktopFreeze() {
+        CollectDesktopListViews(lists);
+        for (HWND lv : lists)
+            SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
+        // 尽量挂起壳层变更通知，减少逐项动画
+        suspendFn = reinterpret_cast<SuspendFn>(
+            GetProcAddress(GetModuleHandleW(L"shell32.dll"), "SHChangeNotifySuspendResume"));
+        if (suspendFn)
+            suspended = suspendFn(TRUE, nullptr, TRUE, 0) != 0;
+    }
+
+    void FlushDirs(const std::wstring& a, const std::wstring& b) {
+        if (!a.empty())
+            SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, a.c_str(), nullptr);
+        if (!b.empty())
+            SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, b.c_str(), nullptr);
+    }
+
+    ~DesktopFreeze() {
+        if (suspended && suspendFn)
+            suspendFn(FALSE, nullptr, TRUE, 0);
+        for (HWND lv : lists) {
+            SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
+            InvalidateRect(lv, nullptr, TRUE);
+        }
+    }
+};
 
 // ---------- 路径小工具 ----------
 
@@ -283,6 +336,7 @@ void SetFlagAt(const std::wstring& flagPath, bool on) {
 ParkResult RestoreByEnumerating(const std::wstring& parkedDir, const std::wstring& desktop) {
     ParkResult r{0, 0, L""};
     LogError(L"manifest 损坏或缺失，改为枚举 Parked 目录恢复");
+    DesktopFreeze freeze;
     for (const DeskItem& it : ScanDesktop(parkedDir)) {
         const std::wstring dst = JoinPath(desktop, UniqueNameInDir(desktop, it.name));
         if (MoveOne(it.path, dst)) {
@@ -292,6 +346,7 @@ ParkResult RestoreByEnumerating(const std::wstring& parkedDir, const std::wstrin
             ++r.failed;
         }
     }
+    freeze.FlushDirs(desktop, parkedDir);
     return r;
 }
 
@@ -342,17 +397,22 @@ ParkResult ParkNonAppsAt(const std::wstring& desktop,
     // 先立 flag：移动中途崩溃时下次启动也能发现
     SetFlagAt(flagPath, true);
 
-    for (const DeskItem& it : items) {
-        if (it.kind == DeskKind::App)
-            continue;
-        const std::wstring dst = JoinPath(parkedDir, UniqueNameInDir(parkedDir, it.name));
-        if (!MoveOne(it.path, dst)) {
-            LogMoveFail(L"收纳", it.path, dst);
-            ++r.failed;
-            continue;
+    {
+        DesktopFreeze freeze;  // 批量移动时不让桌面逐个图标闪
+        for (const DeskItem& it : items) {
+            if (it.kind == DeskKind::App)
+                continue;
+            const std::wstring dst = JoinPath(parkedDir, UniqueNameInDir(parkedDir, it.name));
+            if (!MoveOne(it.path, dst)) {
+                LogMoveFail(L"收纳", it.path, dst);
+                ++r.failed;
+                continue;
+            }
+            entries.push_back(
+                {JoinPath(desktop, it.name), dst, it.kind == DeskKind::Folder, NowIso()});
+            ++r.moved;
         }
-        entries.push_back({JoinPath(desktop, it.name), dst, it.kind == DeskKind::Folder, NowIso()});
-        ++r.moved;
+        freeze.FlushDirs(desktop, parkedDir);
     }
 
     if (!SaveManifestAt(manifestPath, entries)) {
@@ -390,26 +450,28 @@ ParkResult RestoreAllAt(const std::wstring& parkedDir,
         return r;
     }
 
-    for (const ManifestEntry& e : entries) {
-        if (!PathExists(e.parkedPath)) {
-            LogError((L"Parked 中已不存在，丢弃记录：" + e.parkedPath).c_str());
-            continue;
-        }
-        const std::wstring dir = ParentOf(e.originalPath);
-        EnsureDir(dir);
-        const std::wstring dst = JoinPath(dir, UniqueNameInDir(dir, FileNameOf(e.originalPath)));
-        if (MoveOne(e.parkedPath, dst)) {
-            ++r.moved;
-        } else {
-            LogMoveFail(L"恢复", e.parkedPath, dst);
-            ++r.failed;
-            remaining.push_back(e);  // 保留，下次还能重试
-        }
-    }
-
-    // 清扫 Parked 中未入清单的孤儿（崩溃于收纳中途 / manifest 被覆盖），移回备用桌面
+    const std::wstring desktop = fallbackDesktop.empty() ? GetDesktopPath() : fallbackDesktop;
     {
-        const std::wstring desktop = fallbackDesktop.empty() ? GetDesktopPath() : fallbackDesktop;
+        DesktopFreeze freeze;
+        for (const ManifestEntry& e : entries) {
+            if (!PathExists(e.parkedPath)) {
+                LogError((L"Parked 中已不存在，丢弃记录：" + e.parkedPath).c_str());
+                continue;
+            }
+            const std::wstring dir = ParentOf(e.originalPath);
+            EnsureDir(dir);
+            const std::wstring dst =
+                JoinPath(dir, UniqueNameInDir(dir, FileNameOf(e.originalPath)));
+            if (MoveOne(e.parkedPath, dst)) {
+                ++r.moved;
+            } else {
+                LogMoveFail(L"恢复", e.parkedPath, dst);
+                ++r.failed;
+                remaining.push_back(e);  // 保留，下次还能重试
+            }
+        }
+
+        // 清扫 Parked 中未入清单的孤儿（崩溃于收纳中途 / manifest 被覆盖），移回备用桌面
         WIN32_FIND_DATAW fd{};
         HANDLE h = FindFirstFileW(JoinPath(parkedDir, L"*").c_str(), &fd);
         std::vector<std::wstring> orphans;
@@ -438,10 +500,12 @@ ParkResult RestoreAllAt(const std::wstring& parkedDir,
                 ++r.failed;
                 // 补一条记录，下次还能重试
                 const DWORD attr = GetFileAttributesW(src.c_str());
-                const bool isDir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+                const bool isDir =
+                    attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
                 remaining.push_back({JoinPath(desktop, name), src, isDir, NowIso()});
             }
         }
+        freeze.FlushDirs(desktop, parkedDir);
     }
 
     SaveManifestAt(manifestPath, remaining);
