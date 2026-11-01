@@ -27,6 +27,8 @@ bool SaveManifest(const std::vector<ManifestEntry>& entries);
 void SetSessionFlag(bool on);
 // 从 manifest 去掉 Parked 里已不存在的项（悬浮窗里删除/移走后调用）；有删减返回 true
 bool PruneMissingParked();
+// 重命名 Parked 项并更新 manifest（含还原用的 originalPath 文件名）
+bool RenameParkedPath(const std::wstring& oldParkedPath, const std::wstring& newFileName);
 
 // ---- 可注入路径的版本，供测试使用临时目录 ----
 ParkResult ParkNonAppsAt(const std::wstring& desktop,

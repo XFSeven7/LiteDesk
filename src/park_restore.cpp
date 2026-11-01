@@ -721,3 +721,26 @@ bool PruneMissingParked() {
         SetFlagAt(GetSessionFlagPath(), false);
     return true;
 }
+
+bool RenameParkedPath(const std::wstring& oldParkedPath, const std::wstring& newFileName) {
+    if (oldParkedPath.empty() || newFileName.empty()) return false;
+    if (newFileName.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos) return false;
+    const std::wstring dir = ParentOf(oldParkedPath);
+    const std::wstring dst = JoinPath(dir, newFileName);
+    if (PathExists(dst) && _wcsicmp(dst.c_str(), oldParkedPath.c_str()) != 0) return false;
+    if (_wcsicmp(dst.c_str(), oldParkedPath.c_str()) != 0) {
+        if (!MoveFileExW(oldParkedPath.c_str(), dst.c_str(), 0)) return false;
+    }
+
+    std::vector<ManifestEntry> entries;
+    if (!LoadManifestAt(GetManifestPath(), entries)) return true;  // 文件已改名
+    for (ManifestEntry& e : entries) {
+        if (_wcsicmp(e.parkedPath.c_str(), oldParkedPath.c_str()) != 0 &&
+            _wcsicmp(e.parkedPath.c_str(), dst.c_str()) != 0)
+            continue;
+        e.parkedPath = dst;
+        e.originalPath = JoinPath(ParentOf(e.originalPath), newFileName);
+    }
+    SaveManifestAt(GetManifestPath(), entries);
+    return true;
+}
