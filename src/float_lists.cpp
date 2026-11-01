@@ -60,15 +60,15 @@ HFONT MakeListFont(HWND) {
     return CreateFontIndirectW(&ncm.lfMessageFont);
 }
 
-HIMAGELIST LoadBigSysImages() {
-    // 32×32（SMALL 的 2 倍；没有 1.3× 的系统表，取最接近的大一档）
+HIMAGELIST LoadSysImages() {
+    // 最初的小图标 ~16×16；文字仍用 1.1× 系统字体
     IImageList* il = nullptr;
-    if (SUCCEEDED(SHGetImageList(SHIL_LARGE, IID_PPV_ARGS(&il))) && il)
+    if (SUCCEEDED(SHGetImageList(SHIL_SMALL, IID_PPV_ARGS(&il))) && il)
         return reinterpret_cast<HIMAGELIST>(il);
     SHFILEINFOW sfi{};
     return reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
-        SHGFI_SYSICONINDEX | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES));
+        SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES));
 }
 
 std::wstring IniPath() { return GetLiteDeskRoot() + L"\\ui.ini"; }
@@ -266,7 +266,7 @@ void FillList(Pane* pane, const std::vector<std::wstring>& paths) {
         if (attr == INVALID_FILE_ATTRIBUTES) attr = FILE_ATTRIBUTE_NORMAL;
         SHFILEINFOW sfi{};
         SHGetFileInfoW(paths[i].c_str(), attr, &sfi, sizeof(sfi),
-                       SHGFI_SYSICONINDEX | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES);
+                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
         std::wstring name = FileNameOf(paths[i]);
         LVITEMW it{};
         it.mask = LVIF_TEXT | LVIF_IMAGE;
@@ -466,7 +466,7 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         g_classRegistered = true;
     }
 
-    g_sysImages = LoadBigSysImages();
+    g_sysImages = LoadSysImages();
 
     // 顶层半透明窗（不挂 DefView：挂上去滚动条会花、布局错乱）
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
