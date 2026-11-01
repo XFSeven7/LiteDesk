@@ -52,7 +52,7 @@ constexpr int kDragH = 16;   // 无标题栏：顶部拖动条高度
 constexpr int kEdge = 6;     // 边缘缩放热区
 
 HFONT MakeListFont(HWND) {
-    // 系统默认消息字体 × 1.1
+    // 系统默认消息字体 × 1.1（进程已 DPI 感知时，NCM 已是物理像素，勿再乘 DPI）
     NONCLIENTMETRICSW ncm{sizeof(ncm)};
     SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0);
     ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, 11, 10);

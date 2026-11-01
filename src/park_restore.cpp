@@ -105,8 +105,7 @@ bool IsRecycleBinName(const std::wstring& name) {
 
 // 对齐 Arrange-DesktopIcons.ps1：客户区右下角，不是工作区 ScreenToClient
 void PlaceRecycleBinBottomRight() {
-    // HiDPI 下客户区坐标与脚本一致
-    SetProcessDPIAware();
+    // DPI 在 main 启动时已设好；此处再 SetProcessDPIAware 会把悬浮窗文字弄小
     DisableDesktopAutoArrangeBags();
 
     HWND list = GetDesktopFolderViewList();

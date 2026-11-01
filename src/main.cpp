@@ -25,6 +25,16 @@ void ForwardToRunning(const wchar_t* cmdLine) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    // 进程一开始就 DPI 感知：避免整理桌面时再改，导致悬浮窗字体被虚拟化后「变小」
+    using SetDpiCtxFn = BOOL(WINAPI*)(HANDLE);
+    if (auto p = reinterpret_cast<SetDpiCtxFn>(
+            GetProcAddress(GetModuleHandleW(L"user32.dll"), "SetProcessDpiAwarenessContext"))) {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4
+        p(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)));
+    } else {
+        SetProcessDPIAware();
+    }
+
     const bool bench = CmdHas(cmdLine, L"--bench-organize");
     const bool doOrganize = CmdHas(cmdLine, L"--organize");
 
