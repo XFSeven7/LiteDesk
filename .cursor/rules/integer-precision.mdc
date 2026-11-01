@@ -1,0 +1,14 @@
+---
+description: 基本整型尽量用能覆盖范围的更小精度
+globs: src/**/*.{h,cpp}
+alwaysApply: true
+---
+
+# 整型精度
+
+存数据、成员、计数、小常量：若更小宽度能稳定覆盖取值范围，优先用更小精度（`uint8_t` / `int8_t` / `uint16_t` / `int16_t` 等），不要默认 `int` / `unsigned`。
+
+- 枚举值很少时用固定底层类型，例如 `enum class Foo : uint8_t`
+- 桌面项数量、UI 边距/透明度等小范围量用 8/16 位
+- **不要**为了瘦而改坏接口：Win32 API、`RECT`/`LPARAM` 坐标、消息参数、`size_t` 容器下标等仍跟 API/标准走
+- 局部临时变量若立刻交给 32 位 API，保持与 API 一致即可，不必强行缩窄

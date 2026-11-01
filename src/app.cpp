@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -20,7 +21,7 @@ constexpr UINT WM_DESKTOP_CHANGED = WM_APP + 20;
 // 监视线程意外退出通知
 constexpr UINT WM_WATCH_ENDED = WM_APP + 21;
 constexpr UINT_PTR kDebounceTimer = 1;
-constexpr UINT kDebounceMs = 300;
+constexpr uint16_t kDebounceMs = 300;
 
 // 空闲时把可丢弃工作集还给系统（任务管理器数字会下来；再用时再涨）
 void TrimWorkingSet() {
@@ -179,9 +180,10 @@ bool App::BenchOrganize(const std::wstring& outPath) {
               "to_show_ms=%.2f\n"
               "to_content_ms=%.2f\n"
               "total_ms=%.2f\n"
-              "items=%zu moved=%d failed=%d\n",
+              "items=%zu moved=%u failed=%u\n",
               ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, t6),
-              ms(t0, t1), ms(t0, t5), ms(t0, t6), items.size(), r.moved, r.failed);
+              ms(t0, t1), ms(t0, t5), ms(t0, t6), items.size(),
+              static_cast<unsigned>(r.moved), static_cast<unsigned>(r.failed));
 
     EnsureDir(GetLogsDir());
     HANDLE f = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,

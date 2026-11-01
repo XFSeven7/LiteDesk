@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <vector>
@@ -119,18 +120,20 @@ void PlaceRecycleBinBottomRight() {
     RECT client{};
     if (!GetClientRect(list, &client)) return;
 
-    int gapX = 90, gapY = 90;
-    int hx = 0, hy = 0;
-    if (SystemParametersInfoW(SPI_ICONHORIZONTALSPACING, 0, &hx, 0) && hx > 40) gapX = hx;
-    if (SystemParametersInfoW(SPI_ICONVERTICALSPACING, 0, &hy, 0) && hy > 40) gapY = hy;
+    int16_t gapX = 90, gapY = 90;
+    int hx = 0, hy = 0;  // SPI 输出缓冲须为 int
+    if (SystemParametersInfoW(SPI_ICONHORIZONTALSPACING, 0, &hx, 0) && hx > 40)
+        gapX = static_cast<int16_t>(hx);
+    if (SystemParametersInfoW(SPI_ICONVERTICALSPACING, 0, &hy, 0) && hy > 40)
+        gapY = static_cast<int16_t>(hy);
 
     // 图标槽略小于间距，贴紧右/下边缘（脚本 iconSlotW/H + marginR/B）
-    int iconSlotW = 75;
-    int iconSlotH = 75;
-    if (gapX > 40) iconSlotW = (std::min)(75, static_cast<int>(gapX * 0.85));
-    if (gapY > 40) iconSlotH = (std::min)(75, static_cast<int>(gapY * 0.85));
-    constexpr int kMarginR = 4;
-    constexpr int kMarginB = 8;
+    int16_t iconSlotW = 75;
+    int16_t iconSlotH = 75;
+    if (gapX > 40) iconSlotW = static_cast<int16_t>((std::min)(75, static_cast<int>(gapX * 0.85)));
+    if (gapY > 40) iconSlotH = static_cast<int16_t>((std::min)(75, static_cast<int>(gapY * 0.85)));
+    constexpr uint8_t kMarginR = 4;
+    constexpr uint8_t kMarginB = 8;
     const int rightX = client.right - iconSlotW - kMarginR;
     const int bottomY = client.bottom - iconSlotH - kMarginB;
 

@@ -2,10 +2,11 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
-enum class DeskKind { App, Folder, File };
+enum class DeskKind : uint8_t { App, Folder, File };
 
 struct DeskItem {
     std::wstring path;

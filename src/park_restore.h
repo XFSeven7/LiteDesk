@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -13,8 +14,8 @@ struct ManifestEntry {
 };
 
 struct ParkResult {
-    int moved;
-    int failed;
+    uint16_t moved;   // 桌面项数量远小于 65535
+    uint16_t failed;
     std::wstring message;
 };
 

@@ -7,6 +7,8 @@
 #include <uxtheme.h>
 #include <windowsx.h>
 
+#include <cstdint>
+
 #include "park_restore.h"
 #include "util_path.h"
 
@@ -34,24 +36,24 @@ IContextMenu2* g_cm2 = nullptr;
 HIMAGELIST g_sysImages = nullptr;  // 系统图标表（大图标，勿 Destroy）
 HFONT g_listFont = nullptr;
 
-int g_splitX = 308;          // 原 280 × 1.1
+int16_t g_splitX = 308;          // 原 280 × 1.1；窗宽内坐标
 bool g_draggingSplit = false;
-int g_defX = 80, g_defY = 80, g_defW = 616, g_defH = 528;  // 原 560×480 × 1.1
+int16_t g_defX = 80, g_defY = 80, g_defW = 616, g_defH = 528;  // 原 560×480 × 1.1
 bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D 收起）
 bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
 constexpr UINT_PTR kKeepAliveTimer = 42;
-constexpr UINT kKeepAliveMs = 400;
+constexpr uint16_t kKeepAliveMs = 400;
 constexpr UINT_PTR kShellSyncTimer = 43;  // 壳菜单后延迟再同步一次列表
 
 constexpr BYTE kWindowAlpha = 210;  // 整窗半透明，整窗可点
 constexpr COLORREF kListBk = RGB(16, 16, 16);
 constexpr COLORREF kSplitBk = RGB(48, 48, 48);
 constexpr COLORREF kTextColor = RGB(255, 255, 255);
-constexpr int kSnapPx = 16;
-constexpr int kSplitW = 5;
-constexpr int kMinPane = 100;
-constexpr int kDragH = 16;   // 无标题栏：顶部拖动条高度
-constexpr int kEdge = 6;     // 边缘缩放热区
+constexpr uint8_t kSnapPx = 16;
+constexpr uint8_t kSplitW = 5;
+constexpr uint16_t kMinPane = 100;
+constexpr uint8_t kDragH = 16;   // 无标题栏：顶部拖动条高度
+constexpr uint8_t kEdge = 6;     // 边缘缩放热区
 
 HFONT MakeListFont(HWND) {
     // 系统默认消息字体 × 1.1（进程已 DPI 感知时，NCM 已是物理像素，勿再乘 DPI）
@@ -153,7 +155,7 @@ void EnsureOnWorkArea(HWND hwnd) {
 void NotifyListSync(HWND owner) {
     if (g_fl && g_fl->notifyHwnd) {
         PostMessageW(g_fl->notifyHwnd, FL_WM_SYNC_LIST, 0, 0);
-        SetTimer(owner, kShellSyncTimer, 500, nullptr);
+        SetTimer(owner, kShellSyncTimer, 500 /*ms*/, nullptr);
     }
 }
 
@@ -261,8 +263,9 @@ void LayoutPanes(HWND hwnd) {
     const int ch = rc.bottom - rc.top;
     const int listH = ch - kDragH;
     if (cw < kMinPane * 2 + kSplitW || listH < 40) return;
-    if (g_splitX < kMinPane) g_splitX = kMinPane;
-    if (g_splitX > cw - kMinPane - kSplitW) g_splitX = cw - kMinPane - kSplitW;
+    if (g_splitX < kMinPane) g_splitX = static_cast<int16_t>(kMinPane);
+    if (g_splitX > cw - kMinPane - kSplitW)
+        g_splitX = static_cast<int16_t>(cw - kMinPane - kSplitW);
 
     auto fitCol = [](HWND list, int paneW) {
         if (!list) return;
@@ -438,7 +441,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSEMOVE:
         if (g_draggingSplit && (wp & MK_LBUTTON)) {
-            g_splitX = GET_X_LPARAM(lp) - kSplitW / 2;
+            g_splitX = static_cast<int16_t>(GET_X_LPARAM(lp) - kSplitW / 2);
             LayoutPanes(hwnd);
             return 0;
         }
@@ -662,14 +665,15 @@ void FloatLists_LoadPlacement() {
     int y = GetPrivateProfileIntW(L"window", L"y", g_defY, ini.c_str());
     int w = GetPrivateProfileIntW(L"window", L"w", g_defW, ini.c_str());
     int h = GetPrivateProfileIntW(L"window", L"h", g_defH, ini.c_str());
-    g_splitX = GetPrivateProfileIntW(L"window", L"split", g_defW / 2 - kSplitW / 2, ini.c_str());
+    g_splitX = static_cast<int16_t>(
+        GetPrivateProfileIntW(L"window", L"split", g_defW / 2 - kSplitW / 2, ini.c_str()));
     RECT r{x, y, x + w, y + h};
     if (w < 160 || h < 120 || !MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) {
         x = g_defX;
         y = g_defY;
         w = g_defW;
         h = g_defH;
-        g_splitX = w / 2 - kSplitW / 2;
+        g_splitX = static_cast<int16_t>(w / 2 - kSplitW / 2);
     }
     SetWindowPos(g_fl->hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     LayoutPanes(g_fl->hwnd);

@@ -3,6 +3,7 @@
 #include <shlobj.h>
 #include <knownfolders.h>
 
+#include <cstdint>
 #include <string>
 
 namespace {
@@ -90,10 +91,11 @@ std::wstring UniqueNameInDir(const std::wstring& dir, const std::wstring& desire
     std::wstring ext;
     SplitStemExt(desiredName, stem, ext);
 
-    for (int n = 1;; ++n) {
+    for (uint16_t n = 1;; ++n) {
         const std::wstring candidate = stem + L" (" + std::to_wstring(n) + L")" + ext;
         if (!PathExists(JoinPath(dir, candidate.c_str())))
             return candidate;
+        if (n == UINT16_MAX) return desiredName;  // 极端：放弃去重
     }
 }
 

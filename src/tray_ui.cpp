@@ -8,7 +8,7 @@
 
 namespace {
 
-const UINT kTrayUid = 1;
+constexpr UINT kTrayUid = 1;  // NOTIFYICONDATA::uID 为 UINT；取值很小
 
 NOTIFYICONDATAW MakeNid(HWND hwnd) {
     NOTIFYICONDATAW nid{};
