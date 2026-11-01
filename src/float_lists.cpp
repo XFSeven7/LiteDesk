@@ -150,95 +150,6 @@ void EnsureOnWorkArea(HWND hwnd) {
     SetWindowPos(hwnd, nullptr, g_defX, g_defY, g_defW, g_defH, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-// 简易重命名框（无资源模板）：资源管理器里的 rename 依赖 IShellView，我们自己做
-struct RenameUi {
-    std::wstring name;
-    bool ok = false;
-    HWND edit = nullptr;
-};
-
-LRESULT CALLBACK RenameDlgProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    auto* ui = reinterpret_cast<RenameUi*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (msg) {
-    case WM_CREATE: {
-        auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-        ui = reinterpret_cast<RenameUi*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ui));
-        CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", ui->name.c_str(),
-                        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 12, 12, 320, 24, hwnd,
-                        reinterpret_cast<HMENU>(1), cs->hInstance, nullptr);
-        CreateWindowW(L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 160, 48, 80, 28,
-                      hwnd, reinterpret_cast<HMENU>(IDOK), cs->hInstance, nullptr);
-        CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 252, 48, 80, 28, hwnd,
-                      reinterpret_cast<HMENU>(IDCANCEL), cs->hInstance, nullptr);
-        ui->edit = GetDlgItem(hwnd, 1);
-        if (ui->edit) {
-            SendMessageW(ui->edit, EM_SETSEL, 0, -1);
-            SetFocus(ui->edit);
-        }
-        return 0;
-    }
-    case WM_COMMAND:
-        if (LOWORD(wp) == IDOK && ui) {
-            wchar_t buf[MAX_PATH]{};
-            GetWindowTextW(ui->edit ? ui->edit : hwnd, buf, MAX_PATH);
-            ui->name = buf;
-            ui->ok = !ui->name.empty();
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        if (LOWORD(wp) == IDCANCEL) {
-            DestroyWindow(hwnd);
-            return 0;
-        }
-        break;
-    case WM_CLOSE:
-        DestroyWindow(hwnd);
-        return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-bool PromptRename(HWND owner, std::wstring& nameInOut) {
-    const wchar_t kCls[] = L"LiteDeskRenameDlg";
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSW wc{};
-        wc.lpfnWndProc = RenameDlgProc;
-        wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        wc.lpszClassName = kCls;
-        if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-        registered = true;
-    }
-    RenameUi ui{nameInOut, false, nullptr};
-    RECT rc{};
-    if (owner) GetWindowRect(owner, &rc);
-    const int w = 360, h = 120;
-    const int x = owner ? (rc.left + rc.right - w) / 2 : CW_USEDEFAULT;
-    const int y = owner ? (rc.top + rc.bottom - h) / 2 : CW_USEDEFAULT;
-    HWND dlg =
-        CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST, kCls, L"重命名",
-                        WS_CAPTION | WS_POPUP | WS_SYSMENU, x, y, w, h, owner, nullptr,
-                        GetModuleHandleW(nullptr), &ui);
-    if (!dlg) return false;
-    ShowWindow(dlg, SW_SHOW);
-    EnableWindow(owner, FALSE);
-    MSG msg{};
-    while (IsWindow(dlg) && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (!IsDialogMessageW(dlg, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-    EnableWindow(owner, TRUE);
-    if (owner) SetForegroundWindow(owner);
-    if (!ui.ok) return false;
-    nameInOut = ui.name;
-    return true;
-}
-
 void NotifyListSync(HWND owner) {
     if (g_fl && g_fl->notifyHwnd) {
         PostMessageW(g_fl->notifyHwnd, FL_WM_SYNC_LIST, 0, 0);
@@ -246,7 +157,30 @@ void NotifyListSync(HWND owner) {
     }
 }
 
-void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
+// 编辑框已出现时：只选主文件名（不含扩展名），类似资源管理器
+void SelectRenameStem(HWND list) {
+    HWND edit = ListView_GetEditControl(list);
+    if (!edit) return;
+    wchar_t text[MAX_PATH]{};
+    GetWindowTextW(edit, text, MAX_PATH);
+    const wchar_t* dot = wcsrchr(text, L'.');
+    if (dot && dot != text)
+        SendMessageW(edit, EM_SETSEL, 0, static_cast<LPARAM>(dot - text));
+    else
+        SendMessageW(edit, EM_SETSEL, 0, -1);
+}
+
+// 菜单「重命名」：进入就地编辑
+void BeginInPlaceRename(HWND list, int item) {
+    if (!list || item < 0) return;
+    ListView_SetItemState(list, item, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list, item, FALSE);
+    SetFocus(list);
+    if (SendMessageW(list, LVM_EDITLABELW, item, 0))
+        SelectRenameStem(list);
+}
+
+void ShowShellMenu(HWND owner, HWND list, int item, const std::wstring& path, POINT pt) {
     EnsureCom();
     PIDLIST_ABSOLUTE pidl = nullptr;
     if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) return;
@@ -258,7 +192,7 @@ void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
         SUCCEEDED(folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr,
                                         reinterpret_cast<void**>(&cm))) && cm) {
         HMENU menu = CreatePopupMenu();
-        // CMF_CANRENAME：否则壳菜单通常不提供「重命名」（依赖宿主自己处理）
+        // CMF_CANRENAME：壳菜单显示「重命名」；真正编辑用 ListView 就地输入框
         if (SUCCEEDED(cm->QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL | CMF_CANRENAME))) {
             cm->QueryInterface(IID_PPV_ARGS(&g_cm2));
             UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner, nullptr);
@@ -276,14 +210,7 @@ void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
                     (hasVerbA && _stricmp(verbA, "rename") == 0);
 
                 if (isRename) {
-                    // 无 Explorer 就地编辑：弹框改名并写回 manifest
-                    std::wstring newName = FileNameOf(path);
-                    if (PromptRename(owner, newName) &&
-                        _wcsicmp(newName.c_str(), FileNameOf(path).c_str()) != 0) {
-                        if (!RenameParkedPath(path, newName))
-                            MessageBoxW(owner, L"重命名失败（文件名非法或已存在）", L"LiteDesk",
-                                        MB_ICONWARNING);
-                    }
+                    BeginInPlaceRename(list, item);
                 } else {
                     CMINVOKECOMMANDINFO ici{};
                     ici.cbSize = sizeof(ici);
@@ -291,8 +218,8 @@ void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
                     ici.lpVerb = MAKEINTRESOURCEA(cmd - 1);
                     ici.nShow = SW_SHOWNORMAL;
                     cm->InvokeCommand(&ici);
+                    NotifyListSync(owner);
                 }
-                NotifyListSync(owner);
             }
         }
         DestroyMenu(menu);
@@ -360,9 +287,10 @@ bool HitSplitter(HWND hwnd, int x, int y) {
 HWND CreateList(HINSTANCE inst, HWND parent) {
     HWND list = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_NOCOLUMNHEADER |
-                                    LVS_SINGLESEL | LVS_SHAREIMAGELISTS,
+                                    LVS_SINGLESEL | LVS_SHAREIMAGELISTS | LVS_EDITLABELS,
                                 0, 0, 10, 10, parent, nullptr, inst, nullptr);
     if (!list) return nullptr;
+    // FULLROWSELECT 下慢双击标签仍可进编辑；双击整行仍走 NM_DBLCLK 打开
     ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
     SetWindowTheme(list, L"", L"");
     ListView_SetBkColor(list, kListBk);
@@ -541,9 +469,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
     }
     case WM_NOTIFY: {
-        auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lp);
-        Pane* pane = PaneFromList(nm->hdr.hwndFrom);
+        auto* hdr = reinterpret_cast<NMHDR*>(lp);
+        Pane* pane = PaneFromList(hdr->hwndFrom);
         if (!pane) break;
+
+        if (hdr->code == LVN_BEGINLABELEDITW) {
+            // 允许编辑；下一拍再设选区（编辑框此刻刚创建）
+            PostMessageW(hwnd, WM_APP + 60, reinterpret_cast<WPARAM>(pane->list), 0);
+            return FALSE;
+        }
+        if (hdr->code == LVN_ENDLABELEDITW) {
+            auto* info = reinterpret_cast<NMLVDISPINFOW*>(lp);
+            if (!info->item.pszText) return FALSE;  // 取消
+            const int i = info->item.iItem;
+            if (i < 0 || i >= (int)pane->paths.size()) return FALSE;
+            std::wstring newName = info->item.pszText;
+            while (!newName.empty() && (newName.front() == L' ' || newName.front() == L'\t'))
+                newName.erase(newName.begin());
+            while (!newName.empty() && (newName.back() == L' ' || newName.back() == L'\t'))
+                newName.pop_back();
+            if (newName.empty()) return FALSE;
+            const std::wstring oldPath = pane->paths[i];
+            if (_wcsicmp(newName.c_str(), FileNameOf(oldPath).c_str()) == 0) return FALSE;
+            if (!RenameParkedPath(oldPath, newName)) {
+                MessageBoxW(hwnd, L"重命名失败（文件名非法或已存在）", L"LiteDesk", MB_ICONWARNING);
+                return FALSE;
+            }
+            const std::wstring dir = DirOf(oldPath);
+            pane->paths[i] = dir.empty() ? newName : (dir + L"\\" + newName);
+            NotifyListSync(hwnd);
+            return TRUE;
+        }
+
+        auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lp);
         if (nm->hdr.code == NM_DBLCLK) {
             if (nm->iItem >= 0 && nm->iItem < (int)pane->paths.size()) {
                 const std::wstring& p = pane->paths[nm->iItem];
@@ -556,8 +514,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             if (nm->iItem >= 0 && nm->iItem < (int)pane->paths.size()) {
-                ListView_SetItemState(pane->list, nm->iItem, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ShowShellMenu(hwnd, pane->paths[nm->iItem], pt);
+                ListView_SetItemState(pane->list, nm->iItem, LVIS_SELECTED | LVIS_FOCUSED,
+                                     LVIS_SELECTED | LVIS_FOCUSED);
+                ShowShellMenu(hwnd, pane->list, nm->iItem, pane->paths[nm->iItem], pt);
             } else {
                 ShowBlankMenu(hwnd, pt);
             }
@@ -565,6 +524,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
     }
+    case WM_APP + 60:
+        SelectRenameStem(reinterpret_cast<HWND>(wp));
+        return 0;
     case WM_INITMENUPOPUP:
     case WM_DRAWITEM:
     case WM_MEASUREITEM:
