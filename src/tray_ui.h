@@ -26,5 +26,6 @@ void Tray_Remove(HWND hwnd);
 void Tray_ShowMenu(HWND hwnd);
 // 气泡提示（如「部分失败」）
 void Tray_Balloon(HWND hwnd, const wchar_t* title, const wchar_t* text);
-// 注册桌面空白处右键「一键整理」（HKCU，指向本 exe）
+// 注册桌面空白处右键「一键整理」（HKCU）。
+// Win11 精简菜单不显示普通 Shell 动词，会顺带切回完整右键菜单以便直接可见。
 void DesktopCtx_Register(const wchar_t* exePath);
