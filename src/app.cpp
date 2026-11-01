@@ -5,8 +5,6 @@
 #include <string>
 #include <vector>
 
-#include <delayimp.h>
-
 #include "desktop_scanner.h"
 #include "park_restore.h"
 #include "tray_ui.h"
@@ -43,9 +41,7 @@ bool App::EnsureFloatUi() {
 void App::ReleaseFloatUi() {
     listsVisible_ = false;
     FloatLists_Destroy(&fl_);
-    // 卸掉延迟加载的 UI DLL（空闲不再映射 comctl32/uxtheme）
-    __FUnloadDelayLoadedDLL2("comctl32.dll");
-    __FUnloadDelayLoadedDLL2("uxtheme.dll");
+    // comctl32 一经 InitCommonControls 就几乎卸不掉；靠拆窗 + 收回工作集瘦身
     TrimWorkingSet();
 }
 
