@@ -21,6 +21,27 @@ constexpr UINT WM_DESKTOP_CHANGED = WM_APP + 20;
 constexpr UINT WM_WATCH_ENDED = WM_APP + 21;
 constexpr UINT_PTR kDebounceTimer = 1;
 constexpr UINT kDebounceMs = 300;
+
+// 空闲时把可丢弃工作集还给系统（任务管理器数字会下来；再用时再涨）
+void TrimWorkingSet() {
+    SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+}
+}
+
+bool App::EnsureFloatUi() {
+    if (fl_.hwnd) return true;
+    fl_.notifyHwnd = hwnd_;
+    if (!FloatLists_Create(inst_, &fl_)) {
+        LogError(L"创建悬浮列表失败");
+        return false;
+    }
+    return true;
+}
+
+void App::ReleaseFloatUi() {
+    listsVisible_ = false;
+    FloatLists_Destroy(&fl_);
+    TrimWorkingSet();
 }
 
 bool App::Init(HINSTANCE inst) {
@@ -47,17 +68,11 @@ bool App::Init(HINSTANCE inst) {
     if (!hwnd_) return false;
     taskbarCreatedMsg_ = RegisterWindowMessageW(L"TaskbarCreated");
 
-    fl_.notifyHwnd = hwnd_;
-    if (!FloatLists_Create(inst, &fl_)) {
-        DestroyWindow(hwnd_);
-        hwnd_ = nullptr;
-        return false;
-    }
+    // 空闲只挂托盘：不建悬浮窗 / 不拉 comctl，等一键整理再用
     if (!Tray_Add(hwnd_, inst)) LogError(L"添加托盘图标失败");
-    // 桌面空白右键「一键整理」→ 启动/唤醒本程序
     wchar_t exe[MAX_PATH]{};
     if (GetModuleFileNameW(inst, exe, MAX_PATH)) DesktopCtx_Register(exe);
-    // 列表默认隐藏，等用户点「一键整理」
+    TrimWorkingSet();
     return true;
 }
 
@@ -75,6 +90,7 @@ void App::Shutdown() {
 }
 
 void App::RefreshListsFromManifest() {
+    if (!fl_.hwnd) return;
     std::vector<ManifestEntry> entries;
     std::vector<std::wstring> folders, files;
     if (LoadManifest(entries)) {
@@ -87,6 +103,7 @@ void App::RefreshListsFromManifest() {
 }
 
 void App::SyncListsAfterShellChange() {
+    if (!fl_.hwnd) return;
     PruneMissingParked();
     RefreshListsFromManifest();
 }
@@ -94,6 +111,10 @@ void App::SyncListsAfterShellChange() {
 void App::Organize() {
     // 先清掉旧会话残留的防抖定时器，避免重启监视后误触发
     KillTimer(hwnd_, kDebounceTimer);
+    if (!EnsureFloatUi()) {
+        Tray_Balloon(hwnd_, L"LiteDesk", L"无法创建悬浮列表");
+        return;
+    }
     // 先亮窗再收纳，避免「点了整理却半天没窗」
     FloatLists_Show(&fl_, true);
     listsVisible_ = true;
@@ -205,20 +226,39 @@ void App::Restore() {
     organized_ = false;
     watching_ = false;
     ParkResult r = RestoreAll();
-    RefreshListsFromManifest();  // 失败项仍留在 manifest，列表保持可见
-    if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目还原失败，详情见日志");
+    if (r.failed > 0) {
+        Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目还原失败，详情见日志");
+        // 失败项仍显示在列表里便于处理
+        if (EnsureFloatUi()) {
+            RefreshListsFromManifest();
+            FloatLists_Show(&fl_, true);
+            listsVisible_ = true;
+        }
+    } else {
+        ReleaseFloatUi();  // 还原成功：拆 UI，空闲瘦身
+    }
 }
 
 void App::ToggleLists() {
-    listsVisible_ = !listsVisible_;
-    FloatLists_Show(&fl_, listsVisible_);
+    if (!listsVisible_) {
+        if (!EnsureFloatUi()) return;
+        RefreshListsFromManifest();
+        FloatLists_Show(&fl_, true);
+        listsVisible_ = true;
+    } else {
+        FloatLists_Show(&fl_, false);
+        ReleaseFloatUi();
+    }
 }
 
 void App::OnFolderEmptyCmd(UINT msg) {
     switch (msg) {
     case FL_WM_REFRESH: Organize(); break;  // 重新整理，顺带收纳新出现的桌面项
     case FL_WM_RESTORE: Restore(); break;
-    case FL_WM_HIDE: listsVisible_ = false; break;  // 悬浮窗已自行隐藏
+    case FL_WM_HIDE:
+        // 悬浮窗已自行 Hide；这里拆掉控件，把工作集收回
+        ReleaseFloatUi();
+        break;
     }
 }
 

@@ -26,6 +26,8 @@ public:
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     void RefreshListsFromManifest();
+    bool EnsureFloatUi();   // 首次整理/显示时再创建悬浮窗（空闲不占 comctl 等）
+    void ReleaseFloatUi();  // 隐藏/还原后拆掉悬浮窗并尝试收回工作集
 
     HINSTANCE inst_ = nullptr;
     HWND hwnd_ = nullptr;
