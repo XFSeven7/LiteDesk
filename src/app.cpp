@@ -54,6 +54,9 @@ bool App::Init(HINSTANCE inst) {
         return false;
     }
     if (!Tray_Add(hwnd_, inst)) LogError(L"添加托盘图标失败");
+    // 桌面空白右键「一键整理」→ 启动/唤醒本程序
+    wchar_t exe[MAX_PATH]{};
+    if (GetModuleFileNameW(inst, exe, MAX_PATH)) DesktopCtx_Register(exe);
     // 列表默认隐藏，等用户点「一键整理」
     return true;
 }
@@ -227,6 +230,10 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TRAYICON:
         if (lp == WM_LBUTTONDBLCLK) app->ToggleLists();
         else if (lp == WM_RBUTTONUP) Tray_ShowMenu(hwnd);
+        return 0;
+    case WM_LITEDESK_CMD:
+        if (wp == LD_CMD_ORGANIZE) app->Organize();
+        else if (wp == LD_CMD_RESTORE) app->Restore();
         return 0;
     case WM_COMMAND:
         switch (LOWORD(wp)) {

@@ -3,15 +3,36 @@
 #include <objbase.h>
 
 #include "app.h"
+#include "tray_ui.h"
 #include "util_path.h"
 
-int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
-    const bool bench = cmdLine && wcsstr(cmdLine, L"--bench-organize");
+namespace {
+const wchar_t kMainClass[] = L"LiteDeskMain";
 
-    // 单实例：已有实例则直接退出（压测前请先退出正在运行的 LiteDesk）
+bool CmdHas(const wchar_t* cmdLine, const wchar_t* flag) {
+    return cmdLine && flag && wcsstr(cmdLine, flag) != nullptr;
+}
+
+// 已有实例：把桌面右键等命令转过去
+void ForwardToRunning(const wchar_t* cmdLine) {
+    HWND hwnd = FindWindowW(kMainClass, L"LiteDesk");
+    if (!hwnd) return;
+    if (CmdHas(cmdLine, L"--organize"))
+        PostMessageW(hwnd, WM_LITEDESK_CMD, LD_CMD_ORGANIZE, 0);
+    else if (CmdHas(cmdLine, L"--restore"))
+        PostMessageW(hwnd, WM_LITEDESK_CMD, LD_CMD_RESTORE, 0);
+}
+}  // namespace
+
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    const bool bench = CmdHas(cmdLine, L"--bench-organize");
+    const bool doOrganize = CmdHas(cmdLine, L"--organize");
+
+    // 单实例：第二实例只转发命令（桌面右键「一键整理」）
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\LiteDesk.SingleInstance");
     if (!mutex) return 1;
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        ForwardToRunning(cmdLine);
         CloseHandle(mutex);
         return 0;
     }
@@ -32,6 +53,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
             if (!app.BenchOrganize(out)) code = 2;
             app.Shutdown();
         } else {
+            if (doOrganize) app.Organize();
             MSG m;
             while (GetMessageW(&m, nullptr, 0, 0) > 0) {
                 TranslateMessage(&m);

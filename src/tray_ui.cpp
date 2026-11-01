@@ -2,6 +2,8 @@
 
 #include <shellapi.h>
 
+#include <string>
+
 #include "resource.h"
 
 namespace {
@@ -59,4 +61,34 @@ void Tray_Balloon(HWND hwnd, const wchar_t* title, const wchar_t* text) {
     lstrcpynW(nid.szInfoTitle, title, ARRAYSIZE(nid.szInfoTitle));
     lstrcpynW(nid.szInfo, text, ARRAYSIZE(nid.szInfo));
     Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
+
+namespace {
+
+bool RegWriteStr(HKEY root, const wchar_t* subKey, const wchar_t* valueName, const wchar_t* data) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(root, subKey, 0, nullptr, 0, KEY_SET_VALUE, nullptr, &key, nullptr) !=
+        ERROR_SUCCESS)
+        return false;
+    const DWORD bytes = static_cast<DWORD>((wcslen(data) + 1) * sizeof(wchar_t));
+    const LONG r = RegSetValueExW(key, valueName, 0, REG_SZ, reinterpret_cast<const BYTE*>(data), bytes);
+    RegCloseKey(key);
+    return r == ERROR_SUCCESS;
+}
+
+}  // namespace
+
+void DesktopCtx_Register(const wchar_t* exePath) {
+    if (!exePath || !exePath[0]) return;
+    // 桌面空白处右键菜单（不影响文件/文件夹上的菜单）
+    const wchar_t* shellKey = L"Software\\Classes\\DesktopBackground\\Shell\\LiteDesk.Organize";
+    const wchar_t* cmdKey = L"Software\\Classes\\DesktopBackground\\Shell\\LiteDesk.Organize\\command";
+    RegWriteStr(HKEY_CURRENT_USER, shellKey, nullptr, L"一键整理");
+    RegWriteStr(HKEY_CURRENT_USER, shellKey, L"Icon", exePath);
+    RegWriteStr(HKEY_CURRENT_USER, shellKey, L"Position", L"Top");
+    // "path" --organize
+    std::wstring cmd = L"\"";
+    cmd += exePath;
+    cmd += L"\" --organize";
+    RegWriteStr(HKEY_CURRENT_USER, cmdKey, nullptr, cmd.c_str());
 }
