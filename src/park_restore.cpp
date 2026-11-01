@@ -705,3 +705,19 @@ bool SaveManifest(const std::vector<ManifestEntry>& entries) {
 void SetSessionFlag(bool on) {
     SetFlagAt(GetSessionFlagPath(), on);
 }
+
+bool PruneMissingParked() {
+    std::vector<ManifestEntry> entries;
+    if (!LoadManifestAt(GetManifestPath(), entries)) return false;
+    std::vector<ManifestEntry> kept;
+    kept.reserve(entries.size());
+    for (const ManifestEntry& e : entries) {
+        if (PathExists(e.parkedPath))
+            kept.push_back(e);
+    }
+    if (kept.size() == entries.size()) return false;
+    SaveManifestAt(GetManifestPath(), kept);
+    if (kept.empty())
+        SetFlagAt(GetSessionFlagPath(), false);
+    return true;
+}

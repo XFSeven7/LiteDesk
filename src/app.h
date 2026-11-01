@@ -16,6 +16,8 @@ public:
     void ToggleLists();         // 显示/隐藏整理悬浮窗
     // 悬浮窗空白菜单回传（FL_WM_REFRESH / FL_WM_RESTORE / FL_WM_HIDE）
     void OnFolderEmptyCmd(UINT msg);
+    // 壳菜单删除/移动后：剔除不存在的 Parked 项并刷新悬浮列表
+    void SyncListsAfterShellChange();
     // 整理会话中桌面出现变化（已防抖）：只 park 新出现的非应用并刷新列表
     void OnDesktopChanged();
     // 监视线程意外退出：同步状态、重试一次，仍失败则提示用户

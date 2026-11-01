@@ -86,6 +86,11 @@ void App::RefreshListsFromManifest() {
     FloatLists_SetItems(&fl_, folders, files);
 }
 
+void App::SyncListsAfterShellChange() {
+    PruneMissingParked();
+    RefreshListsFromManifest();
+}
+
 void App::Organize() {
     // 先清掉旧会话残留的防抖定时器，避免重启监视后误触发
     KillTimer(hwnd_, kDebounceTimer);
@@ -254,6 +259,9 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         break;
+    case FL_WM_SYNC_LIST:
+        app->SyncListsAfterShellChange();
+        return 0;
     case FL_WM_REFRESH:
     case FL_WM_RESTORE:
     case FL_WM_HIDE:

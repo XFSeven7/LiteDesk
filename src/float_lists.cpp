@@ -40,6 +40,7 @@ bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D
 bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
 constexpr UINT_PTR kKeepAliveTimer = 42;
 constexpr UINT kKeepAliveMs = 400;
+constexpr UINT_PTR kShellSyncTimer = 43;  // 壳菜单后延迟再同步一次列表
 
 constexpr BYTE kWindowAlpha = 210;  // 整窗半透明，整窗可点
 constexpr COLORREF kListBk = RGB(16, 16, 16);
@@ -171,6 +172,11 @@ void ShowShellMenu(HWND owner, const std::wstring& path, POINT pt) {
                 ici.lpVerb = MAKEINTRESOURCEA(cmd - 1);
                 ici.nShow = SW_SHOWNORMAL;
                 cm->InvokeCommand(&ici);
+                // 删除/重命名等可能改掉 Parked 项：立刻同步列表，并再延迟一次（确认框/回收站异步）
+                if (g_fl && g_fl->notifyHwnd) {
+                    PostMessageW(g_fl->notifyHwnd, FL_WM_SYNC_LIST, 0, 0);
+                    SetTimer(owner, kShellSyncTimer, 500, nullptr);
+                }
             }
         }
         DestroyMenu(menu);
@@ -291,6 +297,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == kKeepAliveTimer) {
             KeepVisibleIfWanted(hwnd);
+            return 0;
+        }
+        if (wp == kShellSyncTimer) {
+            KillTimer(hwnd, kShellSyncTimer);
+            if (g_fl && g_fl->notifyHwnd)
+                PostMessageW(g_fl->notifyHwnd, FL_WM_SYNC_LIST, 0, 0);
             return 0;
         }
         break;

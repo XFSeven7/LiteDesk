@@ -7,9 +7,10 @@
 
 // 空白处右键菜单回传给主窗的消息（notifyHwnd 非空时 PostMessage）
 enum {
-    FL_WM_REFRESH = WM_APP + 1,  // 刷新
+    FL_WM_REFRESH = WM_APP + 1,  // 刷新（重新整理）
     FL_WM_RESTORE = WM_APP + 2,  // 还原桌面
     FL_WM_HIDE = WM_APP + 3,     // 隐藏悬浮窗（本模块已自行隐藏，仅通知）
+    FL_WM_SYNC_LIST = WM_APP + 4,  // 壳菜单后同步：清掉已删的 Parked 项并刷新列表
 };
 
 struct FloatLists {
