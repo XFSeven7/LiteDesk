@@ -36,4 +36,4 @@ add_executable(LiteDesk WIN32
     resources/app.rc)
 target_include_directories(LiteDesk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 target_compile_definitions(LiteDesk PRIVATE UNICODE _UNICODE)
-target_link_libraries(LiteDesk PRIVATE comctl32 shell32 ole32 oleaut32 uxtheme shlwapi)
+target_link_libraries(LiteDesk PRIVATE comctl32 shell32 ole32 uxtheme)
