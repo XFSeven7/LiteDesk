@@ -1,5 +1,6 @@
 #include "park_restore.h"
 
+#include <commctrl.h>
 #include <shlobj.h>
 #include <windows.h>
 
@@ -12,7 +13,7 @@
 
 namespace {
 
-// ---------- 桌面重绘冻结 ----------
+// ---------- 桌面重绘冻结 / 收拢图标 ----------
 // 慢感来自 Explorer：每 Move 一次就重排/淡入一个图标。冻结 SysListView 重绘，结束后再统一刷。
 
 void CollectDesktopListViews(std::vector<HWND>& out) {
@@ -29,13 +30,32 @@ void CollectDesktopListViews(std::vector<HWND>& out) {
         take(w);
 }
 
+// 去掉空位：临时打开自动排列，按顺序收拢剩余图标（一般是应用快捷方式）
+void PackDesktopIcons() {
+    std::vector<HWND> lists;
+    CollectDesktopListViews(lists);
+    for (HWND lv : lists) {
+        if (!lv) continue;
+        const LONG_PTR style = GetWindowLongPtrW(lv, GWL_STYLE);
+        const bool hadAuto = (style & LVS_AUTOARRANGE) != 0;
+        if (!hadAuto)
+            SetWindowLongPtrW(lv, GWL_STYLE, style | LVS_AUTOARRANGE);
+        // LVA_DEFAULT：按桌面当前「对齐方式」收拢，填掉移走项留下的空洞
+        ListView_Arrange(lv, LVA_DEFAULT);
+        if (!hadAuto)
+            SetWindowLongPtrW(lv, GWL_STYLE, style);  // 不永久改用户设置，位置会留在收拢后
+        InvalidateRect(lv, nullptr, TRUE);
+    }
+}
+
 struct DesktopFreeze {
     std::vector<HWND> lists;
     using SuspendFn = BOOL(WINAPI*)(BOOL, void*, BOOL, DWORD);
     SuspendFn suspendFn = nullptr;
     bool suspended = false;
+    bool packIcons = false;  // 整理后收拢；还原不收拢，以免打乱用户摆位
 
-    DesktopFreeze() {
+    explicit DesktopFreeze(bool packAfter = false) : packIcons(packAfter) {
         CollectDesktopListViews(lists);
         for (HWND lv : lists)
             SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
@@ -46,9 +66,10 @@ struct DesktopFreeze {
             suspended = suspendFn(TRUE, nullptr, TRUE, 0) != 0;
     }
 
-    void FlushDirs(const std::wstring& a, const std::wstring& b) {
+    void FlushDirs(const std::wstring& a, const std::wstring& b, bool syncDesktop = false) {
+        const DWORD flags = SHCNF_PATHW | (syncDesktop ? SHCNF_FLUSH : SHCNF_FLUSHNOWAIT);
         if (!a.empty())
-            SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, a.c_str(), nullptr);
+            SHChangeNotify(SHCNE_UPDATEDIR, flags, a.c_str(), nullptr);
         if (!b.empty())
             SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, b.c_str(), nullptr);
     }
@@ -60,6 +81,8 @@ struct DesktopFreeze {
             SendMessageW(lv, WM_SETREDRAW, TRUE, 0);
             InvalidateRect(lv, nullptr, TRUE);
         }
+        if (packIcons)
+            PackDesktopIcons();
     }
 };
 
@@ -398,7 +421,7 @@ ParkResult ParkNonAppsAt(const std::wstring& desktop,
     SetFlagAt(flagPath, true);
 
     {
-        DesktopFreeze freeze;  // 批量移动时不让桌面逐个图标闪
+        DesktopFreeze freeze(true);  // 冻结重绘；结束后收拢剩余应用图标，不留空位
         for (const DeskItem& it : items) {
             if (it.kind == DeskKind::App)
                 continue;
@@ -412,7 +435,7 @@ ParkResult ParkNonAppsAt(const std::wstring& desktop,
                 {JoinPath(desktop, it.name), dst, it.kind == DeskKind::Folder, NowIso()});
             ++r.moved;
         }
-        freeze.FlushDirs(desktop, parkedDir);
+        freeze.FlushDirs(desktop, parkedDir, true);  // 同步刷新桌面后再收拢
     }
 
     if (!SaveManifestAt(manifestPath, entries)) {
