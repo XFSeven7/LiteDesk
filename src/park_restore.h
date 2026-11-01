@@ -20,7 +20,13 @@ struct ParkResult {
 };
 
 // ---- 正式 API：路径走 util_path 的 Get* ----
-ParkResult ParkNonApps(const std::wstring& desktop, const std::vector<DeskItem>& items);
+ParkResult ParkNonApps(const std::wstring& desktop, const std::vector<DeskItem>& items,
+                       bool automatic = false);
+// 显式拖入仅接受桌面直属项目；拖出前持久化身份，防止自动收纳抢回。
+ParkResult ParkDesktopPaths(const std::vector<std::wstring>& paths);
+bool PrepareDesktopDrag(const std::vector<std::wstring>& paths);
+bool FinishDesktopDrag();
+bool ClearDesktopKeeps();
 ParkResult RestoreAll();  // 读 manifest，移回，清 flag
 bool NeedsCrashRecovery();  // session.flag 或（manifest 非空且 Parked 有对应项）
 bool LoadManifest(std::vector<ManifestEntry>& out);

@@ -9,12 +9,18 @@
 namespace {
 
 std::wstring GetKnownFolder(const KNOWNFOLDERID& id) {
+#ifdef LITEDESK_TESTING
+    wchar_t root[32768]{};
+    if (!GetEnvironmentVariableW(L"LITEDESK_TEST_ROOT", root, ARRAYSIZE(root))) return L"";
+    return std::wstring(root) + (id == FOLDERID_Desktop ? L"\\desktop" : L"\\data");
+#else
     PWSTR p = nullptr;
     if (FAILED(SHGetKnownFolderPath(id, 0, nullptr, &p)) || !p)
         return L"";
     std::wstring s(p);
     CoTaskMemFree(p);
     return s;
+#endif
 }
 
 std::wstring JoinPath(const std::wstring& base, const wchar_t* suffix) {
@@ -56,6 +62,9 @@ std::wstring GetLiteDeskRoot() {
 }
 
 std::wstring GetParkedDir() {
+#ifdef LITEDESK_TESTING
+    return JoinPath(GetLiteDeskRoot(), L"Parked");
+#else
     // 与桌面同卷暂存，避免跨盘移动文件夹失败（MoveFileEx 对跨卷目录无效）
     const std::wstring desk = GetDesktopPath();
     if (!desk.empty()) {
@@ -68,6 +77,7 @@ std::wstring GetParkedDir() {
         }
     }
     return JoinPath(GetLiteDeskRoot(), L"Parked");
+#endif
 }
 
 std::wstring GetManifestPath() {

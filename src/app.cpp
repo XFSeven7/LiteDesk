@@ -15,47 +15,61 @@
 #include "watcher.h"
 
 namespace {
-const wchar_t kMainClass[] = L"LiteDeskMain";
+const wchar_t* const kMainClass = UI_PARENT_CLASS;
 // 监视线程 → UI 线程的变化通知；UI 侧用定时器合并 300ms 内的连续事件
 constexpr UINT WM_DESKTOP_CHANGED = WM_APP + 20;
 // 监视线程意外退出通知
 constexpr UINT WM_WATCH_ENDED = WM_APP + 21;
 constexpr UINT_PTR kDebounceTimer = 1;
+constexpr UINT_PTR kUiDeferredTimer = 2;
 constexpr uint16_t kDebounceMs = 300;
+struct UpdateScope {
+    bool& flag;
+    explicit UpdateScope(bool& value) : flag(value) { flag = true; }
+    ~UpdateScope() { flag = false; }
+};
 
 // 空闲时把可丢弃工作集还给系统（任务管理器数字会下来；再用时再涨）
 void TrimWorkingSet() {
     SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 }
+
+void ReportError(HWND owner, const wchar_t* message) {
+    LogError(message);
+#ifndef LITEDESK_TESTING
+    MessageBoxW(owner, message, L"LiteDesk", MB_OK | MB_ICONWARNING);
+#endif
+}
 }
 
 bool App::EnsureFloatUi() {
-    if (fl_.hwnd) return true;
+    hiddenRestartRequested_ = false;
+    if (fl_.hwnd) { FloatLists_Show(&fl_, true); return true; }
     fl_.notifyHwnd = hwnd_;
     if (!FloatLists_Create(inst_, &fl_)) {
         LogError(L"创建悬浮列表失败");
         return false;
     }
+    FloatLists_Show(&fl_, true);
     return true;
 }
 
 void App::ReleaseFloatUi() {
-    listsVisible_ = false;
     FloatLists_Destroy(&fl_);
-    // comctl32 一经 InitCommonControls 就几乎卸不掉；靠拆窗 + 收回工作集瘦身
     TrimWorkingSet();
 }
-
-bool App::Init(HINSTANCE inst) {
+bool App::Init(HINSTANCE inst, bool resumeHidden) {
     inst_ = inst;
+    handoffPending_ = resumeHidden;
     EnsureDir(GetLiteDeskRoot());
     EnsureDir(GetParkedDir());
     EnsureDir(GetLogsDir());
 
-    // 上次异常退出：先把桌面还原
-    if (NeedsCrashRecovery()) {
+    bool recoveryFailed = false;
+    // 上次异常退出：先把桌面还原；失败时保留列表供用户重试。
+    if (!resumeHidden && NeedsCrashRecovery()) {
         LogInfo(L"检测到未干净退出，启动时自动恢复");
-        RestoreAll();
+        recoveryFailed = RestoreAll().failed > 0;
     }
 
     WNDCLASSW wc{};
@@ -63,32 +77,76 @@ bool App::Init(HINSTANCE inst) {
     wc.hInstance = inst;
     wc.lpszClassName = kMainClass;
     if (!RegisterClassW(&wc)) return false;
-    // 不用 HWND_MESSAGE：消息窗收不到广播（TaskbarCreated / WM_ENDSESSION）。
+    // 不用 HWND_MESSAGE：消息窗仍需接收 WM_ENDSESSION。
     // 改用永不显示的顶层弹出窗（0 尺寸、工具窗样式，不进任务栏）
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kMainClass, L"LiteDesk", WS_POPUP, 0, 0, 0, 0,
                             nullptr, nullptr, inst, this);
     if (!hwnd_) return false;
-    taskbarCreatedMsg_ = RegisterWindowMessageW(L"TaskbarCreated");
-
-    // 空闲只挂托盘：不建悬浮窗 / 不拉 comctl，等一键整理再用
-    if (!Tray_Add(hwnd_, inst)) LogError(L"添加托盘图标失败");
+#ifndef LITEDESK_TESTING
     wchar_t exe[MAX_PATH]{};
-    if (GetModuleFileNameW(inst, exe, MAX_PATH)) DesktopCtx_Register(exe);
+    if (!GetModuleFileNameW(inst, exe, MAX_PATH) || !DesktopCtx_Register(exe)) {
+        ReportError(hwnd_, L"桌面右键菜单注册失败");
+        return false;
+    }
+#endif
+    if (recoveryFailed) {
+        if (EnsureFloatUi()) RefreshListsFromManifest();
+        ReportError(hwnd_, L"部分项目自动还原失败，请在悬浮窗中重试还原；详情见日志");
+    }
     TrimWorkingSet();
     return true;
 }
 
-void App::Shutdown() {
+void App::Shutdown(bool restore) {
+    exitRequested_ = true;
     // 先停监视，免得还原回桌面的项又被 park
     if (hwnd_) KillTimer(hwnd_, kDebounceTimer);
     Watcher_Stop();
     organized_ = false;
     watching_ = false;
     // 退出即还原桌面；失败项留在 manifest，下次启动自动重试
-    RestoreAll();
-    if (hwnd_) Tray_Remove(hwnd_);
-    FloatLists_Destroy(&fl_);
+    ReleaseFloatUi();
+    if (restore) RestoreAll();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
+}
+
+bool App::TakeHiddenRestartRequest() {
+    const bool requested = hiddenRestartRequested_;
+    hiddenRestartRequested_ = false;
+    return requested && organized_ && !fl_.hwnd && IsActive();
+}
+
+void App::PauseForHiddenRestart() {
+    handoffPending_ = true;
+    KillTimer(hwnd_, kDebounceTimer);
+    Watcher_Stop();
+    watching_ = false;
+}
+
+bool App::PrepareHiddenSession() {
+    if (exitRequested_) return false;
+    organized_ = true;
+    watchRetried_ = false;
+    watching_ = Watcher_Start(GetDesktopPath(), hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
+    return watching_;
+}
+
+void App::ActivateHiddenSession() {
+    handoffPending_ = false;
+    if (IsActive()) OnDesktopChanged(); // 补扫交接期间新增的文件；确认前不移动文件。
+    TrimWorkingSet();
+}
+
+void App::ResumeAfterHiddenRestartFailure() {
+    if (!IsActive()) { handoffPending_ = false; return; }
+    const bool watching = PrepareHiddenSession();
+    handoffPending_ = false;
+    if (!watching) {
+        EnsureFloatUi();
+        RefreshListsFromManifest();
+        ReportError(hwnd_, L"后台监视重启失败，请在列表中刷新或还原桌面");
+    }
+    OnDesktopChanged();
 }
 
 void App::RefreshListsFromManifest() {
@@ -96,74 +154,73 @@ void App::RefreshListsFromManifest() {
     std::vector<ManifestEntry> entries;
     std::vector<std::wstring> folders, files;
     if (LoadManifest(entries)) {
-        for (const ManifestEntry& e : entries) {
-            if (GetFileAttributesW(e.parkedPath.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-            (e.isDirectory ? folders : files).push_back(e.parkedPath);
+        for (const auto& entry : entries) {
+            if (GetFileAttributesW(entry.parkedPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+                (entry.isDirectory ? folders : files).push_back(entry.parkedPath);
         }
     }
     FloatLists_SetItems(&fl_, folders, files);
 }
-
 void App::SyncListsAfterShellChange() {
-    if (!fl_.hwnd) return;
     PruneMissingParked();
     RefreshListsFromManifest();
 }
 
 void App::Organize() {
+    if (exitRequested_ || handoffPending_ || restoring_ || updating_ || FloatLists_IsBusy()) return;
+    UpdateScope updating(updating_);
     // 先清掉旧会话残留的防抖定时器，避免重启监视后误触发
     KillTimer(hwnd_, kDebounceTimer);
     if (!EnsureFloatUi()) {
-        Tray_Balloon(hwnd_, L"LiteDesk", L"无法创建悬浮列表");
+        ReportError(hwnd_, L"无法创建悬浮列表");
         return;
     }
-    // 先亮窗再收纳，避免「点了整理却半天没窗」
-    FloatLists_Show(&fl_, true);
-    listsVisible_ = true;
-    if (fl_.hwnd) UpdateWindow(fl_.hwnd);
-
+    // 列表已显示，再执行收纳。
     const std::wstring desk = GetDesktopPath();
     ParkResult r = ParkNonApps(desk, ScanDesktop(desk));
     RefreshListsFromManifest();
-    if (r.failed > 0) Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目整理失败，详情见日志");
+    if (r.failed > 0) ReportError(hwnd_, L"部分项目整理失败，详情见日志");
     // 进入整理会话：列表已显示即视为已整理；监视是否成功单独记录（重复整理时 Start 会先停旧线程）
     organized_ = true;
     watchRetried_ = false;
     watching_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
     if (!watching_) {
         LogError(L"桌面监视不可用，自动收纳已停用");
-        Tray_Balloon(hwnd_, L"LiteDesk", L"桌面监视启动失败，新文件不会自动收纳；可在列表空白处右键「刷新」");
+        ReportError(hwnd_, L"桌面监视启动失败，新文件不会自动收纳；可在列表空白处右键「刷新」");
     }
 }
 
 bool App::BenchOrganize(const std::wstring& outPath) {
+    if (exitRequested_ || handoffPending_ || restoring_ || updating_ || FloatLists_IsBusy()) return false;
     LARGE_INTEGER freq{}, t0{}, t1{}, t2{}, t3{}, t4{}, t5{}, t6{};
     QueryPerformanceFrequency(&freq);
     auto ms = [&](LARGE_INTEGER a, LARGE_INTEGER b) {
         return (b.QuadPart - a.QuadPart) * 1000.0 / freq.QuadPart;
     };
 
-    KillTimer(hwnd_, kDebounceTimer);
-    QueryPerformanceCounter(&t0);
+    std::vector<DeskItem> items;
+    ParkResult r{};
+    {
+        UpdateScope updating(updating_);
+        KillTimer(hwnd_, kDebounceTimer);
+        QueryPerformanceCounter(&t0);
+        if (!EnsureFloatUi()) return false;
+        QueryPerformanceCounter(&t1);  // 窗已显示（可能仍空）
 
-    FloatLists_Show(&fl_, true);
-    listsVisible_ = true;
-    if (fl_.hwnd) UpdateWindow(fl_.hwnd);
-    QueryPerformanceCounter(&t1);  // 窗已显示（可能仍空）
+        const std::wstring desk = GetDesktopPath();
+        QueryPerformanceCounter(&t2);
+        items = ScanDesktop(desk);
+        QueryPerformanceCounter(&t3);
+        r = ParkNonApps(desk, items);
+        QueryPerformanceCounter(&t4);
+        RefreshListsFromManifest();
+        QueryPerformanceCounter(&t5);
 
-    const std::wstring desk = GetDesktopPath();
-    QueryPerformanceCounter(&t2);
-    auto items = ScanDesktop(desk);
-    QueryPerformanceCounter(&t3);
-    ParkResult r = ParkNonApps(desk, items);
-    QueryPerformanceCounter(&t4);
-    RefreshListsFromManifest();
-    QueryPerformanceCounter(&t5);
-
-    organized_ = true;
-    watchRetried_ = false;
-    watching_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
-    QueryPerformanceCounter(&t6);
+        organized_ = true;
+        watchRetried_ = false;
+        watching_ = Watcher_Start(desk, hwnd_, WM_DESKTOP_CHANGED, WM_WATCH_ENDED);
+        QueryPerformanceCounter(&t6);
+    }
 
     // 写结果后立刻还原，避免压测弄乱桌面
     Restore();
@@ -196,6 +253,7 @@ bool App::BenchOrganize(const std::wstring& outPath) {
 }
 
 void App::OnWatchEnded() {
+    if (handoffPending_) return;
     if (!organized_) return;  // 已还原/退出：旧线程遗留的通知，忽略
     watching_ = false;
     LogError(L"桌面监视线程意外退出");
@@ -207,22 +265,28 @@ void App::OnWatchEnded() {
             return;
         }
     }
-    Tray_Balloon(hwnd_, L"LiteDesk", L"桌面监视已中断，新文件不会自动收纳；可在列表空白处右键「刷新」");
+    ReportError(hwnd_, L"桌面监视已中断，新文件不会自动收纳；可在列表空白处右键「刷新」");
 }
 
 void App::OnDesktopChanged() {
+    if (handoffPending_) return;
     if (!organized_) return;  // 未整理：忽略
+    if (FloatLists_IsBusy() || updating_ || restoring_) { SetTimer(hwnd_, kDebounceTimer, kDebounceMs, nullptr); return; }
+    UpdateScope updating(updating_);
     const std::wstring desk = GetDesktopPath();
     std::vector<DeskItem> items = ScanDesktop(desk);
     bool hasNonApp = false;
     for (const DeskItem& it : items) hasNonApp = hasNonApp || it.kind != DeskKind::App;
     if (!hasNonApp) return;  // 只有应用（含 park 自身引起的变化）：不动，也避免反复触发
-    ParkResult r = ParkNonApps(desk, items);
+    ParkResult r = ParkNonApps(desk, items, true);
     RefreshListsFromManifest();
     if (r.failed > 0) LogError(L"自动收纳部分失败（可能文件仍被占用）");
 }
 
 void App::Restore() {
+    if (exitRequested_ || handoffPending_ || restoring_ || updating_ || FloatLists_IsBusy()) return;
+    restoring_ = true;
+    ReleaseFloatUi();
     // 先停监视，免得还原回桌面的项又被 park
     KillTimer(hwnd_, kDebounceTimer);
     Watcher_Stop();
@@ -230,26 +294,25 @@ void App::Restore() {
     watching_ = false;
     ParkResult r = RestoreAll();
     if (r.failed > 0) {
-        Tray_Balloon(hwnd_, L"LiteDesk", L"部分项目还原失败，详情见日志");
+        ReportError(hwnd_, L"部分项目还原失败，详情见日志");
         // 失败项仍显示在列表里便于处理
         if (EnsureFloatUi()) {
             RefreshListsFromManifest();
-            FloatLists_Show(&fl_, true);
-            listsVisible_ = true;
         }
     } else {
-        ReleaseFloatUi();  // 还原成功：拆 UI，空闲瘦身
+        ReleaseFloatUi();
+        hiddenRestartRequested_ = organized_;
+        exitRequested_ = true;
+        PostQuitMessage(0);  // 还原成功后不再留任何后台进程。
     }
+    restoring_ = false;
 }
 
 void App::ToggleLists() {
-    if (!listsVisible_) {
+    if (!fl_.hwnd) {
         if (!EnsureFloatUi()) return;
         RefreshListsFromManifest();
-        FloatLists_Show(&fl_, true);
-        listsVisible_ = true;
     } else {
-        FloatLists_Show(&fl_, false);
         ReleaseFloatUi();
     }
 }
@@ -259,8 +322,10 @@ void App::OnFolderEmptyCmd(UINT msg) {
     case FL_WM_REFRESH: Organize(); break;  // 重新整理，顺带收纳新出现的桌面项
     case FL_WM_RESTORE: Restore(); break;
     case FL_WM_HIDE:
-        // 悬浮窗已自行 Hide；这里拆掉控件，把工作集收回
+        if (fl_.hwnd && IsWindowVisible(fl_.hwnd)) break; // 旧隐藏通知不能关闭刚重新打开的窗口。
+        // 隐藏时释放界面，整理会话及目录监视继续。
         ReleaseFloatUi();
+        hiddenRestartRequested_ = organized_;
         break;
     }
 }
@@ -275,20 +340,12 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (!app) return DefWindowProcW(hwnd, msg, wp, lp);
 
     switch (msg) {
-    case WM_TRAYICON:
-        if (lp == WM_LBUTTONDBLCLK) app->Organize();
-        else if (lp == WM_RBUTTONUP) Tray_ShowMenu(hwnd);
-        return 0;
     case WM_LITEDESK_CMD:
+        if (app->exitRequested_) return FALSE;
+        if (app->handoffPending_ || app->restoring_ || app->updating_ || FloatLists_IsBusy()) return LD_RESULT_BUSY;
         if (wp == LD_CMD_ORGANIZE) app->Organize();
         else if (wp == LD_CMD_RESTORE) app->Restore();
-        return 0;
-    case WM_COMMAND:
-        switch (LOWORD(wp)) {
-        case ID_TRAY_ORGANIZE: app->Organize(); break;
-        case ID_TRAY_EXIT: PostQuitMessage(0); break;  // Shutdown 里会还原桌面
-        }
-        return 0;
+        return TRUE;
     case WM_DESKTOP_CHANGED:
         SetTimer(hwnd, kDebounceTimer, kDebounceMs, nullptr);  // 重置即防抖
         return 0;
@@ -296,6 +353,17 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         app->OnWatchEnded();
         return 0;
     case WM_TIMER:
+        if (wp == kUiDeferredTimer) {
+            if (FloatLists_IsBusy() || app->updating_ || app->restoring_ || app->handoffPending_) return 0;
+            KillTimer(hwnd, kUiDeferredTimer);
+            const UINT command = app->pendingUiCommand_;
+            const bool sync = app->pendingSync_;
+            app->pendingUiCommand_ = 0;
+            app->pendingSync_ = false;
+            if (sync) app->SyncListsAfterShellChange();
+            if (command) app->OnFolderEmptyCmd(command);
+            return 0;
+        }
         if (wp == kDebounceTimer) {
             KillTimer(hwnd, kDebounceTimer);
             app->OnDesktopChanged();
@@ -303,11 +371,21 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
     case FL_WM_SYNC_LIST:
+        if (FloatLists_IsBusy() || app->updating_ || app->restoring_ || app->handoffPending_) {
+            app->pendingSync_ = true;
+            SetTimer(hwnd, kUiDeferredTimer, 100, nullptr);
+            return 0;
+        }
         app->SyncListsAfterShellChange();
         return 0;
     case FL_WM_REFRESH:
     case FL_WM_RESTORE:
     case FL_WM_HIDE:
+        if (FloatLists_IsBusy() || app->updating_ || app->restoring_ || app->handoffPending_) {
+            if (msg == FL_WM_RESTORE || app->pendingUiCommand_ != FL_WM_RESTORE) app->pendingUiCommand_ = msg;
+            SetTimer(hwnd, kUiDeferredTimer, 100, nullptr);
+            return 0;
+        }
         app->OnFolderEmptyCmd(msg);
         return 0;
     case WM_QUERYENDSESSION:
@@ -315,17 +393,18 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_ENDSESSION:
         // 会话结束时进程可能被直接终止，不会走 Shutdown：先停监视并还原桌面
         if (wp) {
+            if (FloatLists_IsBusy() || app->updating_ || app->restoring_ || app->handoffPending_) {
+                app->exitRequested_ = true;
+                PostQuitMessage(0);
+                return 0;
+            }
             KillTimer(hwnd, kDebounceTimer);
             Watcher_Stop();
             app->organized_ = false;
             app->watching_ = false;
+            app->ReleaseFloatUi();
             RestoreAll();
         }
-        return 0;
-    }
-    // 资源管理器重启后托盘图标会丢，需重新添加
-    if (msg == app->taskbarCreatedMsg_ && msg != 0) {
-        Tray_Add(hwnd, app->inst_);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);

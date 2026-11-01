@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "park_restore.h"
+#include "file_drag.h"
 #include "util_path.h"
 
 #pragma comment(lib, "uxtheme.lib")
@@ -19,6 +20,11 @@
 #endif
 
 namespace {
+unsigned g_busyDepth = 0;
+struct UiOperation {
+    UiOperation() { ++g_busyDepth; }
+    ~UiOperation() { --g_busyDepth; }
+};
 
 const wchar_t kClassName[] = L"LiteDeskFloatPane";
 
@@ -33,7 +39,8 @@ FloatLists* g_fl = nullptr;
 bool g_classRegistered = false;
 bool g_comInited = false;
 IContextMenu2* g_cm2 = nullptr;
-HIMAGELIST g_sysImages = nullptr;  // 系统图标表（大图标，勿 Destroy）
+HIMAGELIST g_sysImages = nullptr;  // 系统共享图标表，不能 ImageList_Destroy。
+IImageList* g_ownedImages = nullptr; // SHGetImageList 返回的接口引用需配对 Release。
 HFONT g_listFont = nullptr;
 
 int16_t g_splitX = 308;          // 原 280 × 1.1；窗宽内坐标
@@ -67,8 +74,10 @@ HFONT MakeListFont(HWND) {
 HIMAGELIST LoadSysImages() {
     // 最初的小图标 ~16×16；文字仍用 1.1× 系统字体
     IImageList* il = nullptr;
-    if (SUCCEEDED(SHGetImageList(SHIL_SMALL, IID_PPV_ARGS(&il))) && il)
+    if (SUCCEEDED(SHGetImageList(SHIL_SMALL, IID_PPV_ARGS(&il))) && il) {
+        g_ownedImages = il;
         return reinterpret_cast<HIMAGELIST>(il);
+    }
     SHFILEINFOW sfi{};
     return reinterpret_cast<HIMAGELIST>(SHGetFileInfoW(
         L"C:\\", FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
@@ -87,10 +96,11 @@ std::wstring DirOf(const std::wstring& p) {
     return i == std::wstring::npos ? L"" : p.substr(0, i);
 }
 
-void EnsureCom() {
-    if (g_comInited) return;
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+bool EnsureCom() {
+    if (g_comInited) return true;
+    HRESULT hr = OleInitialize(nullptr);
     if (SUCCEEDED(hr)) g_comInited = true;
+    return g_comInited;
 }
 
 void ApplySnap(RECT* pr) {
@@ -183,19 +193,35 @@ void BeginInPlaceRename(HWND list, int item) {
 }
 
 void ShowShellMenu(HWND owner, HWND list, int item, const std::wstring& path, POINT pt) {
-    EnsureCom();
+    UiOperation operation;
+    if (!EnsureCom()) return;
     PIDLIST_ABSOLUTE pidl = nullptr;
     if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) return;
 
     IShellFolder* folder = nullptr;
     PCUITEMID_CHILD child = nullptr;
+    std::vector<PIDLIST_ABSOLUTE> selectedPidls;
+    std::vector<PCUITEMID_CHILD> selectedChildren;
+    Pane* pane = list == g_file.list ? &g_file : &g_folder;
+    for (int i = -1; (i = ListView_GetNextItem(list, i, LVNI_SELECTED)) != -1;) {
+        PIDLIST_ABSOLUTE selected = nullptr;
+        if (i >= static_cast<int>(pane->paths.size()) ||
+            FAILED(SHParseDisplayName(pane->paths[i].c_str(), nullptr, &selected, 0, nullptr))) {
+            for (auto p : selectedPidls) CoTaskMemFree(p);
+            CoTaskMemFree(pidl);
+            return;
+        }
+        selectedPidls.push_back(selected);
+        selectedChildren.push_back(ILFindLastID(selected));
+    }
     IContextMenu* cm = nullptr;
     if (SUCCEEDED(SHBindToParent(pidl, IID_PPV_ARGS(&folder), &child)) &&
-        SUCCEEDED(folder->GetUIObjectOf(owner, 1, &child, IID_IContextMenu, nullptr,
+        SUCCEEDED(folder->GetUIObjectOf(owner, static_cast<UINT>(selectedChildren.size()), selectedChildren.data(), IID_IContextMenu, nullptr,
                                         reinterpret_cast<void**>(&cm))) && cm) {
         HMENU menu = CreatePopupMenu();
         // CMF_CANRENAME：壳菜单显示「重命名」；真正编辑用 ListView 就地输入框
-        if (SUCCEEDED(cm->QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL | CMF_CANRENAME))) {
+        if (SUCCEEDED(cm->QueryContextMenu(menu, 0, 1, 0x7FFF,
+            CMF_NORMAL | (selectedChildren.size() == 1 ? CMF_CANRENAME : 0)))) {
             cm->QueryInterface(IID_PPV_ARGS(&g_cm2));
             UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner, nullptr);
             if (g_cm2) { g_cm2->Release(); g_cm2 = nullptr; }
@@ -211,7 +237,7 @@ void ShowShellMenu(HWND owner, HWND list, int item, const std::wstring& path, PO
                     (hasVerbW && _wcsicmp(verbW, L"rename") == 0) ||
                     (hasVerbA && _stricmp(verbA, "rename") == 0);
 
-                if (isRename) {
+                if (isRename && selectedChildren.size() == 1) {
                     BeginInPlaceRename(list, item);
                 } else {
                     CMINVOKECOMMANDINFO ici{};
@@ -228,10 +254,12 @@ void ShowShellMenu(HWND owner, HWND list, int item, const std::wstring& path, PO
     }
     if (cm) cm->Release();
     if (folder) folder->Release();
+    for (auto p : selectedPidls) CoTaskMemFree(p);
     CoTaskMemFree(pidl);
 }
 
 void ShowBlankMenu(HWND owner, POINT pt) {
+    UiOperation operation;
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, 1, L"刷新");
     AppendMenuW(menu, MF_STRING, 2, L"还原桌面");
@@ -290,7 +318,7 @@ bool HitSplitter(HWND hwnd, int x, int y) {
 HWND CreateList(HINSTANCE inst, HWND parent) {
     HWND list = CreateWindowExW(0, WC_LISTVIEWW, L"",
                                 WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_NOCOLUMNHEADER |
-                                    LVS_SINGLESEL | LVS_SHAREIMAGELISTS | LVS_EDITLABELS,
+                                    LVS_SHAREIMAGELISTS | LVS_EDITLABELS,
                                 0, 0, 10, 10, parent, nullptr, inst, nullptr);
     if (!list) return nullptr;
     // FULLROWSELECT 下慢双击标签仍可进编辑；双击整行仍走 NM_DBLCLK 打开
@@ -311,9 +339,21 @@ HWND CreateList(HINSTANCE inst, HWND parent) {
 
 void FillList(Pane* pane, const std::vector<std::wstring>& paths) {
     if (!pane || !pane->list) return;
+    std::vector<std::wstring> selected;
+    std::wstring focused;
+    std::wstring anchor;
+    const int selectionMark = ListView_GetSelectionMark(pane->list);
+    if (selectionMark >= 0 && selectionMark < static_cast<int>(pane->paths.size()))
+        anchor = pane->paths[selectionMark];
+    for (int i = 0; i < static_cast<int>(pane->paths.size()); ++i) {
+        auto state = ListView_GetItemState(pane->list, i, LVIS_SELECTED | LVIS_FOCUSED);
+        if (state & LVIS_SELECTED) selected.push_back(pane->paths[i]);
+        if (state & LVIS_FOCUSED) focused = pane->paths[i];
+    }
     pane->paths = paths;
     SendMessageW(pane->list, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(pane->list);
+    int newSelectionMark = -1;
     for (int i = 0; i < (int)paths.size(); ++i) {
         DWORD attr = GetFileAttributesW(paths[i].c_str());
         if (attr == INVALID_FILE_ATTRIBUTES) attr = FILE_ATTRIBUTE_NORMAL;
@@ -327,7 +367,14 @@ void FillList(Pane* pane, const std::vector<std::wstring>& paths) {
         it.pszText = const_cast<wchar_t*>(name.c_str());
         it.iImage = sfi.iIcon;
         ListView_InsertItem(pane->list, &it);
+        for (const auto& path : selected)
+            if (_wcsicmp(path.c_str(), paths[i].c_str()) == 0)
+                ListView_SetItemState(pane->list, i, LVIS_SELECTED, LVIS_SELECTED);
+        if (!focused.empty() && _wcsicmp(focused.c_str(), paths[i].c_str()) == 0)
+            ListView_SetItemState(pane->list, i, LVIS_FOCUSED, LVIS_FOCUSED);
+        if (!anchor.empty() && _wcsicmp(anchor.c_str(), paths[i].c_str()) == 0) newSelectionMark = i;
     }
+    ListView_SetSelectionMark(pane->list, newSelectionMark);
     RECT rc{};
     GetClientRect(pane->list, &rc);
     ListView_SetColumnWidth(pane->list, 0, rc.right > 8 ? rc.right - 4 : rc.right);
@@ -394,6 +441,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_hidingSelf = true;
         ShowWindow(hwnd, SW_HIDE);
         g_hidingSelf = false;
+        if (g_fl && g_fl->notifyHwnd) PostMessageW(g_fl->notifyHwnd, FL_WM_HIDE, 0, 0);
         return 0;
     case WM_NCHITTEST: {
         // 无系统标题栏：顶条拖动，四边缩放
@@ -476,12 +524,30 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         Pane* pane = PaneFromList(hdr->hwndFrom);
         if (!pane) break;
 
+        if (hdr->code == LVN_KEYDOWN) {
+            auto* key = reinterpret_cast<NMLVKEYDOWN*>(lp);
+            if (key->wVKey == 'A' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+                ListView_SetItemState(pane->list, -1, LVIS_SELECTED, LVIS_SELECTED);
+                return 0;
+            }
+        }
+        if (hdr->code == LVN_BEGINDRAG) {
+            UiOperation operation;
+            std::vector<std::wstring> paths;
+            for (int i = -1; (i = ListView_GetNextItem(pane->list, i, LVNI_SELECTED)) != -1;)
+                if (i < static_cast<int>(pane->paths.size())) paths.push_back(pane->paths[i]);
+            FileDrag_Start(hwnd, paths);
+            NotifyListSync(hwnd);
+            return 0;
+        }
+
         if (hdr->code == LVN_BEGINLABELEDITW) {
             // 允许编辑；下一拍再设选区（编辑框此刻刚创建）
             PostMessageW(hwnd, WM_APP + 60, reinterpret_cast<WPARAM>(pane->list), 0);
             return FALSE;
         }
         if (hdr->code == LVN_ENDLABELEDITW) {
+            UiOperation operation;
             auto* info = reinterpret_cast<NMLVDISPINFOW*>(lp);
             if (!info->item.pszText) return FALSE;  // 取消
             const int i = info->item.iItem;
@@ -506,8 +572,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         auto* nm = reinterpret_cast<NMITEMACTIVATE*>(lp);
         if (nm->hdr.code == NM_DBLCLK) {
+            UiOperation operation;
             if (nm->iItem >= 0 && nm->iItem < (int)pane->paths.size()) {
-                const std::wstring& p = pane->paths[nm->iItem];
+                const std::wstring p = pane->paths[nm->iItem];
                 std::wstring dir = DirOf(p);
                 ShellExecuteW(hwnd, L"open", p.c_str(), nullptr, dir.empty() ? nullptr : dir.c_str(), SW_SHOWNORMAL);
             }
@@ -517,6 +584,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt;
             GetCursorPos(&pt);
             if (nm->iItem >= 0 && nm->iItem < (int)pane->paths.size()) {
+                if (!(ListView_GetItemState(pane->list, nm->iItem, LVIS_SELECTED) & LVIS_SELECTED))
+                    ListView_SetItemState(pane->list, -1, 0, LVIS_SELECTED);
                 ListView_SetItemState(pane->list, nm->iItem, LVIS_SELECTED | LVIS_FOCUSED,
                                      LVIS_SELECTED | LVIS_FOCUSED);
                 ShowShellMenu(hwnd, pane->list, nm->iItem, pane->paths[nm->iItem], pt);
@@ -542,7 +611,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }  // namespace
 
 bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
+    UiOperation operation;
     if (!out) return false;
+    // 图标和 Shell 菜单依赖 COM；空闲托盘不持有 COM 初始化。
+    if (!EnsureCom()) return false;
 
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_LISTVIEW_CLASSES};
     InitCommonControlsEx(&icc);
@@ -555,7 +627,11 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.hbrBackground = CreateSolidBrush(kListBk);
         wc.lpszClassName = kClassName;
-        if (!RegisterClassExW(&wc)) return false;
+        if (!RegisterClassExW(&wc)) {
+            DeleteObject(wc.hbrBackground);
+            FloatLists_Destroy(out);
+            return false;
+        }
         g_classRegistered = true;
     }
 
@@ -565,7 +641,10 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
                                 WS_POPUP | WS_CLIPCHILDREN, g_defX, g_defY, g_defW, g_defH, nullptr,
                                 nullptr, inst, nullptr);
-    if (!hwnd) return false;
+    if (!hwnd) {
+        FloatLists_Destroy(out);
+        return false;
+    }
     SetLayeredWindowAttributes(hwnd, 0, kWindowAlpha, LWA_ALPHA);
     // 定时拉回：挡住 Win+D / 右下角 Show Desktop 的收起
     SetTimer(hwnd, kKeepAliveTimer, kKeepAliveMs, nullptr);
@@ -580,11 +659,18 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     if (!g_folder.list || !g_file.list) {
         DestroyWindow(hwnd);
         g_folder.list = g_file.list = nullptr;
+        FloatLists_Destroy(out);
         return false;
     }
 
     out->hwnd = hwnd;
     g_fl = out;
+    if (!FileDrag_Register(hwnd, out->notifyHwnd) ||
+        !FileDrag_Register(g_folder.list, out->notifyHwnd) ||
+        !FileDrag_Register(g_file.list, out->notifyHwnd)) {
+        FloatLists_Destroy(out);
+        return false;
+    }
     FloatLists_LoadPlacement();
     LayoutPanes(hwnd);
     PinAboveDesktop(hwnd);
@@ -592,37 +678,49 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
 }
 
 void FloatLists_Destroy(FloatLists* fl) {
+    UiOperation operation;
     if (!fl) return;
     if (g_fl == fl) {
         FloatLists_SavePlacement();
         g_fl = nullptr;
     }
     g_wantVisible = false;
+    FileDrag_Revoke(g_folder.list);
+    FileDrag_Revoke(g_file.list);
+    FileDrag_Revoke(fl->hwnd);
     if (fl->hwnd) {
         KillTimer(fl->hwnd, kKeepAliveTimer);
         DestroyWindow(fl->hwnd);
     }
     fl->hwnd = nullptr;
     g_folder.list = g_file.list = nullptr;
-    g_folder.paths.clear();
-    g_file.paths.clear();
-    g_sysImages = nullptr;  // 系统共享表，不 Destroy
+    std::vector<std::wstring>().swap(g_folder.paths);
+    std::vector<std::wstring>().swap(g_file.paths);
+    // 先拆除所有引用图标的控件，再释放本模块持有的接口引用。
+    if (g_ownedImages) {
+        g_ownedImages->Release();
+        g_ownedImages = nullptr;
+    }
+    g_sysImages = nullptr;
     if (g_listFont) {
         DeleteObject(g_listFont);
         g_listFont = nullptr;
     }
     if (g_comInited) {
-        CoUninitialize();
+        OleUninitialize();
         g_comInited = false;
     }
 }
 
 void FloatLists_SetItems(FloatLists* fl, const std::vector<std::wstring>& folders,
                          const std::vector<std::wstring>& files) {
+    UiOperation operation;
     if (!fl || !fl->hwnd) return;
     FillList(&g_folder, folders);
     FillList(&g_file, files);
 }
+
+bool FloatLists_IsBusy() { return g_busyDepth != 0 || FileDrag_IsActive(); }
 
 void FloatLists_Show(FloatLists* fl, bool show) {
     if (!fl || !fl->hwnd) return;

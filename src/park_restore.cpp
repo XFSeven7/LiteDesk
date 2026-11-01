@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <climits>
 #include <vector>
 
 #include "util_log.h"
@@ -182,6 +183,10 @@ struct DesktopFreeze {
     bool packIcons = false;  // 整理后收拢；还原不收拢，以免打乱用户摆位
 
     explicit DesktopFreeze(bool packAfter = false) : packIcons(packAfter) {
+#ifdef LITEDESK_TESTING
+        packIcons = false;
+        return;
+#endif
         CollectDesktopListViews(lists);
         for (HWND lv : lists)
             SendMessageW(lv, WM_SETREDRAW, FALSE, 0);
@@ -193,6 +198,9 @@ struct DesktopFreeze {
     }
 
     void FlushDirs(const std::wstring& a, const std::wstring& b, bool syncDesktop = false) {
+#ifdef LITEDESK_TESTING
+        return;
+#endif
         const DWORD flags = SHCNF_PATHW | (syncDesktop ? SHCNF_FLUSH : SHCNF_FLUSHNOWAIT);
         if (!a.empty())
             SHChangeNotify(SHCNE_UPDATEDIR, flags, a.c_str(), nullptr);
@@ -427,11 +435,40 @@ struct Parser {
     }
 };
 
+// Windows 替换已打开的目标文件仍可能暂时报 ACCESS_DENIED。
+// 同会话的主进程与 UI 用短锁保护文件读取/替换，不覆盖任何 Shell 操作。
+struct ManifestIoLock {
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\LiteDesk.ManifestIO");
+    bool owned = false;
+    ManifestIoLock() {
+        if (mutex) {
+            DWORD result = WaitForSingleObject(mutex, 5000);
+            owned = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+        }
+    }
+    ~ManifestIoLock() {
+        if (owned) ReleaseMutex(mutex);
+        if (mutex) CloseHandle(mutex);
+    }
+};
+
 bool ReadUtf8File(const std::wstring& path, std::wstring& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f)
-        return false;
-    std::string bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    ManifestIoLock lock;
+    if (!lock.owned) return false;
+    // UI 进程可能正在读旧快照，主进程必须仍能原子替换清单。
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > INT_MAX) {
+        CloseHandle(file); return false;
+    }
+    std::string bytes(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD read = 0;
+    const bool ok = bytes.empty() || (ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr)
+                                     && read == bytes.size());
+    CloseHandle(file);
+    if (!ok) return false;
     if (bytes.compare(0, 3, "\xEF\xBB\xBF") == 0)
         bytes.erase(0, 3);
     if (bytes.empty()) {
@@ -449,6 +486,8 @@ bool ReadUtf8File(const std::wstring& path, std::wstring& out) {
 
 // 先写临时文件再替换，避免写一半崩溃导致 manifest 损坏
 bool WriteUtf8FileAtomic(const std::wstring& path, const std::wstring& text) {
+    ManifestIoLock lock;
+    if (!lock.owned) return false;
     std::string bytes;
     if (!text.empty()) {
         const int n = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
@@ -540,7 +579,12 @@ ParkResult ParkNonAppsAt(const std::wstring& desktop,
 
     // 沿用上次未恢复的条目，避免覆盖丢记录
     std::vector<ManifestEntry> entries;
-    LoadManifestAt(manifestPath, entries);
+    if (!LoadManifestAt(manifestPath, entries) && PathExists(manifestPath)) {
+        r.failed = 1;
+        r.message = L"清单读取失败，已停止整理以保留原有记录";
+        LogError(r.message.c_str());
+        return r;
+    }
     const size_t before = entries.size();
 
     // 先立 flag：移动中途崩溃时下次启动也能发现
@@ -567,6 +611,16 @@ ParkResult ParkNonAppsAt(const std::wstring& desktop,
     if (!SaveManifestAt(manifestPath, entries)) {
         LogError(L"保存 manifest 失败");
         ++r.failed;
+        // 清单尚未替换成功：撤销本批移动，不让拖入项变成无记录的文件。
+        // 外部程序恰好占用或创建同名源项时不覆盖，保留 Parked 孤儿供恢复逻辑找回。
+        std::vector<ManifestEntry> rollbackFailed;
+        for (size_t i = before; i < entries.size(); ++i) {
+            const auto& e = entries[i];
+            if (MoveOne(e.parkedPath, e.originalPath)) --r.moved;
+            else { LogMoveFail(L"撤销收纳", e.parkedPath, e.originalPath); rollbackFailed.push_back(e); }
+        }
+        entries.resize(before);
+        entries.insert(entries.end(), rollbackFailed.begin(), rollbackFailed.end());
     }
     // 没有任何待恢复内容时不留 flag
     if (entries.size() == before && before == 0)
@@ -685,12 +739,108 @@ bool NeedsCrashRecoveryAt(const std::wstring& parkedDir,
 
 // ---------- 正式 API：路径取自 util_path ----------
 
-ParkResult ParkNonApps(const std::wstring& desktop, const std::vector<DeskItem>& items) {
-    return ParkNonAppsAt(desktop, GetParkedDir(), GetManifestPath(), GetSessionFlagPath(), items);
+namespace {
+std::wstring KeepsPath() { return GetLiteDeskRoot() + L"\\desktop-kept.json"; }
+
+// 文件身份含创建时间，删除后同名的新文件不会继承豁免。
+std::wstring FileIdentity(const std::wstring& path) {
+    HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return {};
+    BY_HANDLE_FILE_INFORMATION info{};
+    bool ok = GetFileInformationByHandle(h, &info) != FALSE;
+    CloseHandle(h);
+    if (!ok) return {};
+    return std::to_wstring(info.dwVolumeSerialNumber) + L":" +
+        std::to_wstring(info.nFileIndexHigh) + L":" + std::to_wstring(info.nFileIndexLow) + L":" +
+        std::to_wstring(info.ftCreationTime.dwHighDateTime) + L":" +
+        std::to_wstring(info.ftCreationTime.dwLowDateTime);
+}
+bool ReadKeeps(std::vector<ManifestEntry>& kept) {
+    return !PathExists(KeepsPath()) || LoadManifestAt(KeepsPath(), kept);
+}
+bool HasIdentity(const std::vector<ManifestEntry>& kept, const std::wstring& id) {
+    return !id.empty() && std::any_of(kept.begin(), kept.end(), [&](const ManifestEntry& e) {
+        return e.originalPath == id;
+    });
+}
+bool WriteKeeps(const std::vector<ManifestEntry>& kept) {
+    return kept.empty() ? ClearDesktopKeeps() : SaveManifestAt(KeepsPath(), kept);
+}
+}
+
+bool ClearDesktopKeeps() {
+    if (DeleteFileW(KeepsPath().c_str())) return true;
+    DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+bool PrepareDesktopDrag(const std::vector<std::wstring>& paths) {
+    std::vector<ManifestEntry> kept;
+    if (!ReadKeeps(kept)) return false;
+    for (const auto& p : paths) {
+        auto id = FileIdentity(p);
+        if (id.empty()) return false;
+        if (!HasIdentity(kept, id)) kept.push_back({id, p, false, L""});
+    }
+    return WriteKeeps(kept);
+}
+
+bool FinishDesktopDrag() {
+    std::vector<ManifestEntry> kept;
+    if (!ReadKeeps(kept)) return false;
+    std::vector<ManifestEntry> onDesktop;
+    for (const auto& item : ScanDesktop(GetDesktopPath())) {
+        auto id = FileIdentity(item.path);
+        if (HasIdentity(kept, id)) onDesktop.push_back({id, item.path, false, L""});
+    }
+    // 保存失败则保留旧的预登记记录；仍能保护已移到桌面的项目。
+    return WriteKeeps(onDesktop);
+}
+
+ParkResult ParkDesktopPaths(const std::vector<std::wstring>& paths) {
+    std::vector<DeskItem> items;
+    const auto desktop = GetDesktopPath();
+    ParkResult rejected{0, 0, L""};
+    for (const auto& p : paths) {
+        DWORD attrs = GetFileAttributesW(p.c_str());
+        if (_wcsicmp(ParentOf(p).c_str(), desktop.c_str()) != 0 ||
+            attrs == INVALID_FILE_ATTRIBUTES || (attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))) {
+            ++rejected.failed;
+            continue;
+        }
+        auto name = p.substr(p.find_last_of(L"\\/") + 1);
+        if (_wcsicmp(name.c_str(), L"desktop.ini") == 0) { ++rejected.failed; continue; }
+        // 明确拖入的快捷方式和程序也允许收纳。
+        if (std::any_of(items.begin(), items.end(), [&](const DeskItem& i) { return _wcsicmp(i.path.c_str(), p.c_str()) == 0; })) continue;
+        items.push_back({p, name, attrs & FILE_ATTRIBUTE_DIRECTORY ? DeskKind::Folder : DeskKind::File});
+    }
+    if (items.empty()) return rejected;
+    auto result = ParkNonAppsAt(desktop, GetParkedDir(), GetManifestPath(), GetSessionFlagPath(), items);
+    result.failed += rejected.failed;
+    FinishDesktopDrag();
+    return result;
+}
+
+ParkResult ParkNonApps(const std::wstring& desktop, const std::vector<DeskItem>& items, bool automatic) {
+    if (!automatic) {
+        if (!ClearDesktopKeeps()) return {0, 1, L"无法清除桌面保留状态"};
+        return ParkNonAppsAt(desktop, GetParkedDir(), GetManifestPath(), GetSessionFlagPath(), items);
+    }
+    std::vector<ManifestEntry> kept;
+    if (!ReadKeeps(kept)) return {0, 1, L"桌面保留状态读取失败，暂缓自动收纳"};
+    std::vector<DeskItem> filtered;
+    for (const auto& item : items) {
+        if (kept.empty() || !HasIdentity(kept, FileIdentity(item.path))) filtered.push_back(item);
+    }
+    return ParkNonAppsAt(desktop, GetParkedDir(), GetManifestPath(), GetSessionFlagPath(), filtered);
 }
 
 ParkResult RestoreAll() {
-    return RestoreAllAt(GetParkedDir(), GetManifestPath(), GetSessionFlagPath());
+    auto result = RestoreAllAt(GetParkedDir(), GetManifestPath(), GetSessionFlagPath());
+    if (!result.failed) ClearDesktopKeeps();
+    return result;
 }
 
 bool NeedsCrashRecovery() {

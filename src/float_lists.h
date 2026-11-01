@@ -5,6 +5,12 @@
 #include <string>
 #include <vector>
 
+#ifdef LITEDESK_TESTING
+constexpr wchar_t UI_PARENT_CLASS[] = L"LiteDeskTestMain";
+#else
+constexpr wchar_t UI_PARENT_CLASS[] = L"LiteDeskMain";
+#endif
+
 // 空白处右键菜单回传给主窗的消息（notifyHwnd 非空时 PostMessage）
 enum {
     FL_WM_REFRESH = WM_APP + 1,  // 刷新（重新整理）
@@ -19,6 +25,7 @@ struct FloatLists {
 };
 
 bool FloatLists_Create(HINSTANCE inst, FloatLists* out);
+bool FloatLists_IsBusy();  // Shell/控件调用可进入嵌套消息循环，期间不得拆窗。
 void FloatLists_Destroy(FloatLists* fl);
 
 void FloatLists_SetItems(FloatLists* fl, const std::vector<std::wstring>& folders,

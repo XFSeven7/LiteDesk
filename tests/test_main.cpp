@@ -54,6 +54,16 @@ static void TestParkRestore() {
         assert(out[0].isDirectory && out[0].parkedAtIso == in[0].parkedAtIso);
     }
 
+    // 已有清单读取失败时不能按空清单覆盖，也不能继续移动文件。
+    {
+        const auto unreadable = root + L"\\unreadable.json";
+        touch(unreadable, "{ invalid manifest");
+        const auto failed = ParkNonAppsAt(desk, parked, unreadable, flag, ScanDesktop(desk));
+        assert(failed.moved == 0 && failed.failed > 0);
+        assert(exists(desk + L"\\doc.txt"));
+        assert(readAll(unreadable) == "{ invalid manifest");
+    }
+
     // Park：仅剩 app.lnk
     auto items = ScanDesktop(desk);
     ParkResult pr = ParkNonAppsAt(desk, parked, manifest, flag, items);

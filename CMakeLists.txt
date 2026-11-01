@@ -25,9 +25,11 @@ target_link_libraries(LiteDeskTests PRIVATE shell32 ole32)
 enable_language(RC)
 add_executable(LiteDesk WIN32
     src/main.cpp
+    src/hidden_restart.cpp
     src/app.cpp
+
     src/tray_ui.cpp
-    src/float_lists.cpp
+    src/float_lists.cpp src/file_drag.cpp
     src/watcher.cpp
     src/util_path.cpp
     src/util_log.cpp
@@ -42,3 +44,63 @@ if(MSVC)
     target_link_libraries(LiteDesk PRIVATE delayimp)
     target_link_options(LiteDesk PRIVATE "/DELAYLOAD:comctl32.dll" "/DELAYLOAD:uxtheme.dll")
 endif()
+
+# 隔离合成桌面，禁止注册系统菜单或改变真实桌面图标。
+add_executable(LiteDeskSessionTests tests/test_app_session.cpp src/app.cpp src/float_lists.cpp src/file_drag.cpp
+    src/tray_ui.cpp src/watcher.cpp src/util_path.cpp src/util_log.cpp src/park_restore.cpp src/desktop_scanner.cpp)
+target_include_directories(LiteDeskSessionTests PRIVATE resources)
+target_compile_definitions(LiteDeskSessionTests PRIVATE UNICODE _UNICODE LITEDESK_TESTING)
+target_link_libraries(LiteDeskSessionTests PRIVATE comctl32 shell32 ole32 uxtheme delayimp)
+if(MSVC)
+    target_link_options(LiteDeskSessionTests PRIVATE /DELAYLOAD:comctl32.dll /DELAYLOAD:uxtheme.dll)
+endif()
+
+add_executable(LiteDeskManifestTests tests/test_manifest_concurrency.cpp src/util_path.cpp src/util_log.cpp
+    src/park_restore.cpp src/desktop_scanner.cpp)
+target_compile_definitions(LiteDeskManifestTests PRIVATE UNICODE _UNICODE)
+target_link_libraries(LiteDeskManifestTests PRIVATE shell32 ole32)
+
+# 按需构建的安全内存测量程序，使用与集成测试相同的合成桌面。
+add_executable(LiteDeskMemoryProbe EXCLUDE_FROM_ALL tests/memory_probe.cpp src/app.cpp src/float_lists.cpp src/file_drag.cpp
+    src/tray_ui.cpp src/watcher.cpp src/util_path.cpp src/util_log.cpp src/park_restore.cpp src/desktop_scanner.cpp)
+target_include_directories(LiteDeskMemoryProbe PRIVATE src resources)
+target_compile_definitions(LiteDeskMemoryProbe PRIVATE UNICODE _UNICODE LITEDESK_TESTING)
+target_link_libraries(LiteDeskMemoryProbe PRIVATE comctl32 shell32 ole32 uxtheme psapi delayimp)
+if(MSVC)
+    target_link_options(LiteDeskMemoryProbe PRIVATE /DELAYLOAD:comctl32.dll /DELAYLOAD:uxtheme.dll)
+endif()
+
+add_executable(LiteDeskCommandTests tests/test_on_demand.cpp src/app.cpp src/float_lists.cpp src/file_drag.cpp
+    src/tray_ui.cpp src/watcher.cpp src/util_path.cpp src/util_log.cpp src/park_restore.cpp src/desktop_scanner.cpp)
+target_include_directories(LiteDeskCommandTests PRIVATE resources)
+target_compile_definitions(LiteDeskCommandTests PRIVATE UNICODE _UNICODE LITEDESK_TESTING)
+target_link_libraries(LiteDeskCommandTests PRIVATE comctl32 shell32 ole32 uxtheme delayimp)
+if(MSVC)
+    target_link_options(LiteDeskCommandTests PRIVATE /DELAYLOAD:comctl32.dll /DELAYLOAD:uxtheme.dll)
+endif()
+
+add_executable(LiteDeskResourceTests tests/test_ui_resources.cpp src/float_lists.cpp src/file_drag.cpp src/util_path.cpp
+    src/util_log.cpp src/park_restore.cpp src/desktop_scanner.cpp)
+target_compile_definitions(LiteDeskResourceTests PRIVATE UNICODE _UNICODE LITEDESK_TESTING)
+target_link_libraries(LiteDeskResourceTests PRIVATE comctl32 shell32 ole32 uxtheme delayimp)
+if(MSVC)
+    target_link_options(LiteDeskResourceTests PRIVATE /DELAYLOAD:comctl32.dll /DELAYLOAD:uxtheme.dll)
+endif()
+
+# 独立 GUI 测试程序使用真实入口，允许验证隐藏后的实例交接。
+add_executable(LiteDeskTestApp WIN32 src/main.cpp src/hidden_restart.cpp src/app.cpp src/float_lists.cpp src/file_drag.cpp src/tray_ui.cpp
+    src/watcher.cpp src/util_path.cpp src/util_log.cpp src/park_restore.cpp src/desktop_scanner.cpp)
+target_include_directories(LiteDeskTestApp PRIVATE resources)
+target_compile_definitions(LiteDeskTestApp PRIVATE UNICODE _UNICODE LITEDESK_TESTING)
+target_link_libraries(LiteDeskTestApp PRIVATE comctl32 shell32 ole32 uxtheme delayimp)
+if(MSVC)
+    target_link_options(LiteDeskTestApp PRIVATE /DELAYLOAD:comctl32.dll /DELAYLOAD:uxtheme.dll)
+endif()
+add_dependencies(LiteDeskCommandTests LiteDeskTestApp)
+target_link_libraries(LiteDeskCommandTests PRIVATE psapi)
+
+add_executable(LiteDeskDragTests tests/test_file_drag.cpp src/app.cpp src/float_lists.cpp src/file_drag.cpp src/tray_ui.cpp
+    src/watcher.cpp src/util_path.cpp src/util_log.cpp src/park_restore.cpp src/desktop_scanner.cpp)
+target_include_directories(LiteDeskDragTests PRIVATE resources)
+target_compile_definitions(LiteDeskDragTests PRIVATE UNICODE _UNICODE LITEDESK_TESTING)
+target_link_libraries(LiteDeskDragTests PRIVATE comctl32 shell32 ole32 uxtheme)
