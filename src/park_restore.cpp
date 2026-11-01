@@ -1,7 +1,9 @@
 #include "park_restore.h"
 
 #include <commctrl.h>
+#include <exdisp.h>
 #include <shlobj.h>
+#include <shlwapi.h>
 #include <windows.h>
 
 #include <fstream>
@@ -11,7 +13,17 @@
 #include "util_log.h"
 #include "util_path.h"
 
+#pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "oleaut32.lib")
+
 namespace {
+
+#ifndef SWC_DESKTOP
+#define SWC_DESKTOP 8
+#endif
+#ifndef SWFO_NEEDDISPATCH
+#define SWFO_NEEDDISPATCH 1
+#endif
 
 // ---------- 桌面重绘冻结 / 收拢图标 ----------
 // 慢感来自 Explorer：每 Move 一次就重排/淡入一个图标。冻结 SysListView 重绘，结束后再统一刷。
@@ -30,6 +42,145 @@ void CollectDesktopListViews(std::vector<HWND>& out) {
         take(w);
 }
 
+// 取桌面 IFolderView（可跨进程安全改图标坐标）
+bool GetDesktopFolderView(IFolderView** outFv, HWND* outHwnd) {
+    if (outFv) *outFv = nullptr;
+    if (outHwnd) *outHwnd = nullptr;
+    IShellWindows* windows = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&windows))) ||
+        !windows)
+        return false;
+
+    VARIANT empty{};
+    VariantInit(&empty);
+    VARIANT loc{};
+    VariantInit(&loc);
+    loc.vt = VT_I4;
+    loc.lVal = 0;
+    long hwnd = 0;
+    IDispatch* disp = nullptr;
+    HRESULT hr =
+        windows->FindWindowSW(&loc, &empty, SWC_DESKTOP, &hwnd, SWFO_NEEDDISPATCH, &disp);
+    windows->Release();
+    if (FAILED(hr) || !disp) return false;
+
+    IServiceProvider* sp = nullptr;
+    IShellBrowser* browser = nullptr;
+    IShellView* view = nullptr;
+    IFolderView* fv = nullptr;
+    bool ok = false;
+    if (SUCCEEDED(disp->QueryInterface(IID_PPV_ARGS(&sp))) && sp &&
+        SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&browser))) && browser &&
+        SUCCEEDED(browser->QueryActiveShellView(&view)) && view &&
+        SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&fv))) && fv) {
+        if (outFv) {
+            *outFv = fv;
+            fv = nullptr;  // 所有权交给调用方
+        }
+        if (outHwnd) {
+            IOleWindow* ole = nullptr;
+            if (SUCCEEDED(view->QueryInterface(IID_PPV_ARGS(&ole))) && ole) {
+                ole->GetWindow(outHwnd);
+                ole->Release();
+            }
+            if ((!*outHwnd) && hwnd) *outHwnd = reinterpret_cast<HWND>(LongToHandle(hwnd));
+        }
+        ok = outFv && *outFv;
+    }
+    if (fv) fv->Release();
+    if (view) view->Release();
+    if (browser) browser->Release();
+    if (sp) sp->Release();
+    disp->Release();
+    return ok;
+}
+
+// 整理后：回收站钉到主显示器工作区右下角
+void PlaceRecycleBinBottomRight() {
+    IFolderView* fv = nullptr;
+    HWND hwndView = nullptr;
+    if (!GetDesktopFolderView(&fv, &hwndView) || !fv) return;
+
+    IShellFolder* folder = nullptr;
+    if (FAILED(fv->GetFolder(IID_PPV_ARGS(&folder))) || !folder) {
+        fv->Release();
+        return;
+    }
+
+    int count = 0;
+    fv->ItemCount(SVGIO_ALLVIEW, &count);
+    PITEMID_CHILD rbPidl = nullptr;
+    for (int i = 0; i < count; ++i) {
+        PITEMID_CHILD pidl = nullptr;
+        if (FAILED(fv->Item(i, &pidl)) || !pidl) continue;
+        STRRET sr{};
+        wchar_t name[MAX_PATH]{};
+        bool isRb = false;
+        if (SUCCEEDED(folder->GetDisplayNameOf(pidl, SHGDN_FORPARSING, &sr)) &&
+            SUCCEEDED(StrRetToBufW(&sr, pidl, name, MAX_PATH))) {
+            wchar_t lower[MAX_PATH]{};
+            lstrcpynW(lower, name, MAX_PATH);
+            CharLowerW(lower);
+            isRb = wcsstr(lower, L"645ff040-5081-101b-9f08-00aa002f954e") != nullptr;
+        }
+        if (!isRb) {
+            // 显示名兜底（中英）
+            STRRET dn{};
+            if (SUCCEEDED(folder->GetDisplayNameOf(pidl, SHGDN_NORMAL, &dn)) &&
+                SUCCEEDED(StrRetToBufW(&dn, pidl, name, MAX_PATH))) {
+                isRb = _wcsicmp(name, L"Recycle Bin") == 0 || _wcsicmp(name, L"回收站") == 0;
+            }
+        }
+        if (isRb) {
+            rbPidl = pidl;
+            break;
+        }
+        CoTaskMemFree(pidl);
+    }
+    folder->Release();
+
+    if (!rbPidl) {
+        fv->Release();
+        return;
+    }
+
+    POINT spacing{75, 75};
+    fv->GetSpacing(&spacing);
+    if (spacing.x <= 0) spacing.x = 75;
+    if (spacing.y <= 0) spacing.y = 75;
+
+    // 主显示器工作区右下 → 桌面视图客户区坐标
+    POINT br{};
+    if (hwndView) {
+        HMONITOR mon = MonitorFromWindow(hwndView, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(mon, &mi);
+        br.x = mi.rcWork.right - spacing.x;
+        br.y = mi.rcWork.bottom - spacing.y;
+        ScreenToClient(hwndView, &br);
+        if (br.x < 0) br.x = 0;
+        if (br.y < 0) br.y = 0;
+    }
+
+    // 关掉自动排列，否则马上又被收拢回去
+    std::vector<HWND> lists;
+    CollectDesktopListViews(lists);
+    for (HWND lv : lists) {
+        LONG_PTR style = GetWindowLongPtrW(lv, GWL_STYLE);
+        if (style & LVS_AUTOARRANGE)
+            SetWindowLongPtrW(lv, GWL_STYLE, style & ~LVS_AUTOARRANGE);
+    }
+
+    PCUITEMID_CHILD items[] = {rbPidl};
+    POINT pts[] = {br};
+    fv->SelectAndPositionItems(1, items, pts, SVSI_POSITIONITEM);
+    CoTaskMemFree(rbPidl);
+    fv->Release();
+
+    for (HWND lv : lists)
+        InvalidateRect(lv, nullptr, TRUE);
+}
+
 // 去掉空位：临时打开自动排列，按顺序收拢剩余图标（一般是应用快捷方式）
 void PackDesktopIcons() {
     std::vector<HWND> lists;
@@ -46,6 +197,8 @@ void PackDesktopIcons() {
             SetWindowLongPtrW(lv, GWL_STYLE, style);  // 不永久改用户设置，位置会留在收拢后
         InvalidateRect(lv, nullptr, TRUE);
     }
+    // 收拢后再把回收站挪到右下角（并关闭自动排列以免被拉回去）
+    PlaceRecycleBinBottomRight();
 }
 
 struct DesktopFreeze {
