@@ -95,11 +95,49 @@ bool GetDesktopFolderView(IFolderView** outFv, HWND* outHwnd) {
     return ok;
 }
 
-// 整理后：回收站钉到主显示器工作区右下角
+// 工作区右下角 → 桌面 ListView 客户区坐标（对齐图标网格）
+POINT RecycleBinBottomRightInList(HWND lv, const POINT& spacing) {
+    RECT work{};
+    if (lv) {
+        HMONITOR mon = MonitorFromWindow(lv, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{sizeof(mi)};
+        if (GetMonitorInfoW(mon, &mi))
+            work = mi.rcWork;
+    }
+    if (work.right <= work.left || work.bottom <= work.top)
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+
+    const int sx = spacing.x > 0 ? spacing.x : 75;
+    const int sy = spacing.y > 0 ? spacing.y : 75;
+    // 锚点是格子左上角：落在工作区内最右下的一格
+    POINT br{work.right - sx, work.bottom - sy};
+    if (lv) ScreenToClient(lv, &br);
+    if (br.x < 0) br.x = 0;
+    if (br.y < 0) br.y = 0;
+    br.x = (br.x / sx) * sx;
+    br.y = (br.y / sy) * sy;
+    return br;
+}
+
+void ClearDesktopAutoArrange(const std::vector<HWND>& lists) {
+    for (HWND lv : lists) {
+        if (!lv) continue;
+        const LONG_PTR style = GetWindowLongPtrW(lv, GWL_STYLE);
+        if (style & LVS_AUTOARRANGE)
+            SetWindowLongPtrW(lv, GWL_STYLE, style & ~LVS_AUTOARRANGE);
+    }
+}
+
+// 整理后：回收站钉到当前桌面所在屏的工作区右下角
 void PlaceRecycleBinBottomRight() {
+    std::vector<HWND> lists;
+    CollectDesktopListViews(lists);
+    HWND lv = lists.empty() ? nullptr : lists[0];
+
     IFolderView* fv = nullptr;
     HWND hwndView = nullptr;
     if (!GetDesktopFolderView(&fv, &hwndView) || !fv) return;
+    if (!lv) lv = hwndView;
 
     IShellFolder* folder = nullptr;
     if (FAILED(fv->GetFolder(IID_PPV_ARGS(&folder))) || !folder) {
@@ -110,6 +148,7 @@ void PlaceRecycleBinBottomRight() {
     int count = 0;
     fv->ItemCount(SVGIO_ALLVIEW, &count);
     PITEMID_CHILD rbPidl = nullptr;
+    int rbIndex = -1;
     for (int i = 0; i < count; ++i) {
         PITEMID_CHILD pidl = nullptr;
         if (FAILED(fv->Item(i, &pidl)) || !pidl) continue;
@@ -118,13 +157,10 @@ void PlaceRecycleBinBottomRight() {
         bool isRb = false;
         if (SUCCEEDED(folder->GetDisplayNameOf(pidl, SHGDN_FORPARSING, &sr)) &&
             SUCCEEDED(StrRetToBufW(&sr, pidl, name, MAX_PATH))) {
-            wchar_t lower[MAX_PATH]{};
-            lstrcpynW(lower, name, MAX_PATH);
-            CharLowerW(lower);
-            isRb = wcsstr(lower, L"645ff040-5081-101b-9f08-00aa002f954e") != nullptr;
+            CharLowerW(name);
+            isRb = wcsstr(name, L"645ff040-5081-101b-9f08-00aa002f954e") != nullptr;
         }
         if (!isRb) {
-            // 显示名兜底（中英）
             STRRET dn{};
             if (SUCCEEDED(folder->GetDisplayNameOf(pidl, SHGDN_NORMAL, &dn)) &&
                 SUCCEEDED(StrRetToBufW(&dn, pidl, name, MAX_PATH))) {
@@ -133,6 +169,7 @@ void PlaceRecycleBinBottomRight() {
         }
         if (isRb) {
             rbPidl = pidl;
+            rbIndex = i;
             break;
         }
         CoTaskMemFree(pidl);
@@ -148,37 +185,24 @@ void PlaceRecycleBinBottomRight() {
     fv->GetSpacing(&spacing);
     if (spacing.x <= 0) spacing.x = 75;
     if (spacing.y <= 0) spacing.y = 75;
+    const POINT br = RecycleBinBottomRightInList(lv, spacing);
 
-    // 主显示器工作区右下 → 桌面视图客户区坐标
-    POINT br{};
-    if (hwndView) {
-        HMONITOR mon = MonitorFromWindow(hwndView, MONITOR_DEFAULTTOPRIMARY);
-        MONITORINFO mi{sizeof(mi)};
-        GetMonitorInfoW(mon, &mi);
-        br.x = mi.rcWork.right - spacing.x;
-        br.y = mi.rcWork.bottom - spacing.y;
-        ScreenToClient(hwndView, &br);
-        if (br.x < 0) br.x = 0;
-        if (br.y < 0) br.y = 0;
-    }
-
-    // 关掉自动排列，否则马上又被收拢回去
-    std::vector<HWND> lists;
-    CollectDesktopListViews(lists);
-    for (HWND lv : lists) {
-        LONG_PTR style = GetWindowLongPtrW(lv, GWL_STYLE);
-        if (style & LVS_AUTOARRANGE)
-            SetWindowLongPtrW(lv, GWL_STYLE, style & ~LVS_AUTOARRANGE);
-    }
+    // 必须先关自动排列，否则坐标会被立刻吸回
+    ClearDesktopAutoArrange(lists);
 
     PCUITEMID_CHILD items[] = {rbPidl};
     POINT pts[] = {br};
-    fv->SelectAndPositionItems(1, items, pts, SVSI_POSITIONITEM);
+    fv->SelectAndPositionItems(1, items, pts, SVSI_POSITIONITEM | SVSI_DESELECTOTHERS);
+
+    // 再写一层 ListView 坐标（跨进程可用的 LVM_SETITEMPOSITION）
+    if (lv && rbIndex >= 0)
+        SendMessageW(lv, LVM_SETITEMPOSITION, rbIndex, MAKELPARAM(br.x, br.y));
+
     CoTaskMemFree(rbPidl);
     fv->Release();
 
-    for (HWND lv : lists)
-        InvalidateRect(lv, nullptr, TRUE);
+    for (HWND h : lists)
+        InvalidateRect(h, nullptr, TRUE);
 }
 
 // 去掉空位：临时打开自动排列，按顺序收拢剩余图标（一般是应用快捷方式）
@@ -188,16 +212,15 @@ void PackDesktopIcons() {
     for (HWND lv : lists) {
         if (!lv) continue;
         const LONG_PTR style = GetWindowLongPtrW(lv, GWL_STYLE);
-        const bool hadAuto = (style & LVS_AUTOARRANGE) != 0;
-        if (!hadAuto)
-            SetWindowLongPtrW(lv, GWL_STYLE, style | LVS_AUTOARRANGE);
-        // LVA_DEFAULT：按桌面当前「对齐方式」收拢，填掉移走项留下的空洞
+        SetWindowLongPtrW(lv, GWL_STYLE, style | LVS_AUTOARRANGE);
         ListView_Arrange(lv, LVA_DEFAULT);
-        if (!hadAuto)
-            SetWindowLongPtrW(lv, GWL_STYLE, style);  // 不永久改用户设置，位置会留在收拢后
         InvalidateRect(lv, nullptr, TRUE);
     }
-    // 收拢后再把回收站挪到右下角（并关闭自动排列以免被拉回去）
+    // 收拢后关掉自动排列，再钉回收站到右下角（否则会被重新排开）
+    ClearDesktopAutoArrange(lists);
+    PlaceRecycleBinBottomRight();
+    // Explorer 有时异步写回旧坐标，短延迟再钉一次
+    Sleep(120);
     PlaceRecycleBinBottomRight();
 }
 
