@@ -11,6 +11,7 @@
 #include "tray_ui.h"
 #include "util_log.h"
 #include "util_path.h"
+#include "window_snap.h"
 
 #include "watcher.h"
 
@@ -82,6 +83,7 @@ bool App::Init(HINSTANCE inst, bool resumeHidden) {
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kMainClass, L"LiteDesk", WS_POPUP, 0, 0, 0, 0,
                             nullptr, nullptr, inst, this);
     if (!hwnd_) return false;
+    WindowSnap_Register(hwnd_);
 #ifndef LITEDESK_TESTING
     wchar_t exe[MAX_PATH]{};
     if (!GetModuleFileNameW(inst, exe, MAX_PATH) || !DesktopCtx_Register(exe)) {
@@ -106,6 +108,7 @@ void App::Shutdown(bool restore) {
     watching_ = false;
     // 退出即还原桌面；失败项留在 manifest，下次启动自动重试
     ReleaseFloatUi();
+    if (hwnd_) WindowSnap_Unregister(hwnd_);
     if (restore) RestoreAll();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
 }
@@ -387,6 +390,9 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         app->OnFolderEmptyCmd(msg);
+        return 0;
+    case WM_HOTKEY:
+        WindowSnap_OnHotkey(static_cast<uint8_t>(wp), hwnd, app->fl_.hwnd);
         return 0;
     case WM_QUERYENDSESSION:
         return TRUE;  // 不阻止注销/关机

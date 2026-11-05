@@ -10,6 +10,7 @@
 #include "../src/park_restore.h"
 #include "../src/util_log.h"
 #include "../src/util_path.h"
+#include "../src/window_snap.h"
 
 static void touch(const std::wstring& p, const char* content = "x") {
     std::ofstream f(p, std::ios::binary);
@@ -195,6 +196,25 @@ int main() {
     }
 
     TestParkRestore();
+
+    // 吸附矩形：余数留给右/下，三分屏拼起来等于工作区
+    {
+        const RECT work{10, 20, 1010, 620};  // 1000×600
+        const RECT left = SnapWorkRect(work, SnapSlot::Left);
+        const RECT right = SnapWorkRect(work, SnapSlot::Right);
+        assert(left.left == 10 && left.right == 510 && left.bottom == 620);
+        assert(right.left == 510 && right.right == 1010);
+        const RECT tl = SnapWorkRect(work, SnapSlot::TopLeft);
+        assert(tl.right == 510 && tl.bottom == 320);
+        const RECT a = SnapWorkRect(work, SnapSlot::LeftThird);
+        const RECT b = SnapWorkRect(work, SnapSlot::CenterThird);
+        const RECT c = SnapWorkRect(work, SnapSlot::RightThird);
+        assert(a.left == 10 && a.right == b.left && b.right == c.left && c.right == 1010);
+        assert(SnapWorkRect(work, SnapSlot::LeftTwoThirds).right == b.right);
+        assert(SnapWorkRect(work, SnapSlot::RightTwoThirds).left == b.left);
+        const RECT full = SnapWorkRect(work, SnapSlot::Maximize);
+        assert(full.left == 10 && full.top == 20 && full.right == 1010 && full.bottom == 620);
+    }
 
     // 清理测试目录（可用简单递归删除或留给手工）
     return 0;
