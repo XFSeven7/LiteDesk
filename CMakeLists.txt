@@ -42,7 +42,9 @@ target_include_directories(LiteDesk PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resource
 target_compile_definitions(LiteDesk PRIVATE UNICODE _UNICODE)
 target_link_libraries(LiteDesk PRIVATE comctl32 shell32 ole32 uxtheme)
 # 空闲不加载：comctl32/uxtheme 延迟到首次创建悬浮列表时再映射
+# 发布包静态链接 VC 运行库，新电脑不必另装 VC++ Redistributable
 if(MSVC)
+    set_property(TARGET LiteDesk PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_link_libraries(LiteDesk PRIVATE delayimp)
     target_link_options(LiteDesk PRIVATE "/DELAYLOAD:comctl32.dll" "/DELAYLOAD:uxtheme.dll")
 endif()
