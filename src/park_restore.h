@@ -19,6 +19,9 @@ struct ParkResult {
     std::wstring message;
 };
 
+// 收拢后第 index 个图标（从 0 起，不含回收站）的客户区坐标。纵向排，排满换列。
+POINT DesktopPackPos(int index, int gapX, int gapY, int rowsPerCol);
+
 // ---- 正式 API：路径走 util_path 的 Get* ----
 ParkResult ParkNonApps(const std::wstring& desktop, const std::vector<DeskItem>& items,
                        bool automatic = false);

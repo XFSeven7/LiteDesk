@@ -45,7 +45,7 @@ HFONT g_listFont = nullptr;
 
 int16_t g_splitX = 308;          // 原 280 × 1.1；窗宽内坐标
 bool g_draggingSplit = false;
-int16_t g_defX = 80, g_defY = 80, g_defW = 616, g_defH = 528;  // 原 560×480 × 1.1
+int16_t g_defX = 80, g_defY = 12, g_defW = 616, g_defH = 528;  // 原 560×480 × 1.1；X 在显示前改到工作区右上
 bool g_wantVisible = false;  // 用户希望显示（区分主动隐藏 vs Win+D 收起）
 bool g_hidingSelf = false;   // 正在主动 Hide，放行 SWP_HIDEWINDOW
 constexpr UINT_PTR kKeepAliveTimer = 42;
@@ -61,6 +61,19 @@ constexpr uint8_t kSplitW = 5;
 constexpr uint16_t kMinPane = 100;
 constexpr uint8_t kDragH = 16;   // 无标题栏：顶部拖动条高度
 constexpr uint8_t kEdge = 6;     // 边缘缩放热区
+
+// 主屏工作区右上角，留一点边
+void MoveDefaultToTopRight() {
+    RECT wa{};
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;
+    constexpr int kMargin = 12;
+    int x = wa.right - g_defW - kMargin;
+    int y = wa.top + kMargin;
+    if (x < wa.left) x = wa.left;
+    if (y < wa.top) y = wa.top;
+    g_defX = static_cast<int16_t>(x);
+    g_defY = static_cast<int16_t>(y);
+}
 
 HFONT MakeListFont(HWND) {
     // 系统默认消息字体 × 1.1（进程已 DPI 感知时，NCM 已是物理像素，勿再乘 DPI）
@@ -636,6 +649,7 @@ bool FloatLists_Create(HINSTANCE inst, FloatLists* out) {
     }
 
     g_sysImages = LoadSysImages();
+    MoveDefaultToTopRight();
 
     // 顶层半透明窗（不挂 DefView：挂上去滚动条会花、布局错乱）
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, kClassName, L"LiteDesk",
@@ -758,6 +772,7 @@ void FloatLists_SavePlacement() {
 
 void FloatLists_LoadPlacement() {
     if (!g_fl || !g_fl->hwnd) return;
+    MoveDefaultToTopRight();
     std::wstring ini = IniPath();
     int x = GetPrivateProfileIntW(L"window", L"x", g_defX, ini.c_str());
     int y = GetPrivateProfileIntW(L"window", L"y", g_defY, ini.c_str());
@@ -765,6 +780,11 @@ void FloatLists_LoadPlacement() {
     int h = GetPrivateProfileIntW(L"window", L"h", g_defH, ini.c_str());
     g_splitX = static_cast<int16_t>(
         GetPrivateProfileIntW(L"window", L"split", g_defW / 2 - kSplitW / 2, ini.c_str()));
+    // 旧默认在左上角 (80,80)，没有用户摆过的位置时改到右上角
+    if (x == 80 && y == 80) {
+        x = g_defX;
+        y = g_defY;
+    }
     RECT r{x, y, x + w, y + h};
     if (w < 160 || h < 120 || !MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) {
         x = g_defX;

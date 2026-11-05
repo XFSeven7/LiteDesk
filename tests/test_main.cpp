@@ -197,6 +197,15 @@ int main() {
 
     TestParkRestore();
 
+    {
+        const POINT a = DesktopPackPos(0, 90, 100, 8);
+        const POINT b = DesktopPackPos(1, 90, 100, 8);
+        const POINT c = DesktopPackPos(8, 90, 100, 8);
+        assert(a.x == 0 && a.y == 0);
+        assert(b.x == 0 && b.y == 100);
+        assert(c.x == 90 && c.y == 0);
+    }
+
     // 吸附矩形：余数留给右/下，三分屏拼起来等于工作区
     {
         const RECT work{10, 20, 1010, 620};  // 1000×600

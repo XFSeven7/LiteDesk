@@ -105,6 +105,21 @@ bool IsRecycleBinName(const std::wstring& name) {
     return wcsstr(name.c_str(), L"回收站") != nullptr || wcsstr(name.c_str(), L"Recycle") != nullptr;
 }
 
+}  // namespace
+
+POINT DesktopPackPos(int index, int gapX, int gapY, int rowsPerCol) {
+    if (index < 0) index = 0;
+    if (rowsPerCol < 1) rowsPerCol = 1;
+    if (gapX < 1) gapX = 1;
+    if (gapY < 1) gapY = 1;
+    POINT p{};
+    p.x = (index / rowsPerCol) * gapX;
+    p.y = (index % rowsPerCol) * gapY;
+    return p;
+}
+
+namespace {
+
 // 对齐 Arrange-DesktopIcons.ps1：客户区右下角，不是工作区 ScreenToClient
 void PlaceRecycleBinBottomRight() {
     // DPI 在 main 启动时已设好；此处再 SetProcessDPIAware 会把悬浮窗文字弄小
@@ -154,15 +169,34 @@ void PlaceRecycleBinBottomRight() {
     InvalidateRect(list, nullptr, TRUE);
 }
 
-// 去掉空位后按脚本方案钉回收站
+// 去掉空位：按系统图标间距从左上角纵向排紧，再把回收站钉到右下角
 void PackDesktopIcons() {
     std::vector<HWND> lists;
     CollectDesktopListViews(lists);
+    if (lists.empty()) return;
+
+    int gapX = 90, gapY = 90;
+    int hx = 0, hy = 0;
+    if (SystemParametersInfoW(SPI_ICONHORIZONTALSPACING, 0, &hx, 0) && hx > 40) gapX = hx;
+    if (SystemParametersInfoW(SPI_ICONVERTICALSPACING, 0, &hy, 0) && hy > 40) gapY = hy;
+
     for (HWND lv : lists) {
         if (!lv) continue;
         const LONG_PTR style = GetWindowLongPtrW(lv, GWL_STYLE);
-        SetWindowLongPtrW(lv, GWL_STYLE, style | LVS_AUTOARRANGE);
-        ListView_Arrange(lv, LVA_DEFAULT);
+        if (style & LVS_AUTOARRANGE)
+            SetWindowLongPtrW(lv, GWL_STYLE, style & ~LVS_AUTOARRANGE);
+
+        RECT client{};
+        if (!GetClientRect(lv, &client)) continue;
+        const int rows = (std::max)(1, static_cast<int>(client.bottom) / gapY);
+        const int count = static_cast<int>(SendMessageW(lv, LVM_GETITEMCOUNT, 0, 0));
+        int packed = 0;
+        for (int i = 0; i < count; ++i) {
+            if (IsRecycleBinName(GetDesktopItemText(lv, i))) continue;
+            const POINT pos = DesktopPackPos(packed, gapX, gapY, rows);
+            SendMessageW(lv, LVM_SETITEMPOSITION, static_cast<WPARAM>(i), MAKELPARAM(pos.x, pos.y));
+            ++packed;
+        }
         InvalidateRect(lv, nullptr, TRUE);
     }
     PlaceRecycleBinBottomRight();
