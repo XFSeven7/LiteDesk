@@ -106,6 +106,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
             if (resume.requested) app.ActivateHiddenSession();
             if (doRestore) app.Restore();
             else if (doOrganize) app.Organize();
+#ifndef LITEDESK_TESTING
+            // 仅双击启动提示一次；关掉后收回工作集，不留额外常驻内存
+            if (!resume.requested && !doOrganize && !doRestore && !bench) {
+                MessageBoxW(app.MainWindow(), L"LiteDesk 已在后台运行。\n托盘图标上右键可退出。",
+                            L"LiteDesk", MB_OK | MB_ICONINFORMATION);
+                SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
+            }
+#endif
             bool restoreOnExit = true;
             MSG m;
 #ifdef LITEDESK_TESTING
