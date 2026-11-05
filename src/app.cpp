@@ -85,6 +85,9 @@ bool App::Init(HINSTANCE inst, bool resumeHidden) {
     if (!hwnd_) return false;
     WindowSnap_Register(hwnd_);
 #ifndef LITEDESK_TESTING
+    if (!Tray_Add(hwnd_, inst)) LogError(L"添加托盘图标失败");
+#endif
+#ifndef LITEDESK_TESTING
     wchar_t exe[MAX_PATH]{};
     if (!GetModuleFileNameW(inst, exe, MAX_PATH) || !DesktopCtx_Register(exe)) {
         ReportError(hwnd_, L"桌面右键菜单注册失败");
@@ -108,7 +111,12 @@ void App::Shutdown(bool restore) {
     watching_ = false;
     // 退出即还原桌面；失败项留在 manifest，下次启动自动重试
     ReleaseFloatUi();
-    if (hwnd_) WindowSnap_Unregister(hwnd_);
+    if (hwnd_) {
+        WindowSnap_Unregister(hwnd_);
+#ifndef LITEDESK_TESTING
+        Tray_Remove(hwnd_);
+#endif
+    }
     if (restore) RestoreAll();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
 }
@@ -304,9 +312,12 @@ void App::Restore() {
         }
     } else {
         ReleaseFloatUi();
+#ifdef LITEDESK_TESTING
         hiddenRestartRequested_ = organized_;
         exitRequested_ = true;
-        PostQuitMessage(0);  // 还原成功后不再留任何后台进程。
+        PostQuitMessage(0);  // 测试：还原成功后退出
+#endif
+        // 正式运行：还原后进程仍在，快捷键继续有效
     }
     restoring_ = false;
 }
@@ -341,6 +352,13 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     App* app = reinterpret_cast<App*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (!app) return DefWindowProcW(hwnd, msg, wp, lp);
+
+    if (msg == Tray_TaskbarCreatedMsg()) {
+#ifndef LITEDESK_TESTING
+        Tray_Add(hwnd, app->inst_);
+#endif
+        return 0;
+    }
 
     switch (msg) {
     case WM_LITEDESK_CMD:
@@ -390,6 +408,9 @@ LRESULT CALLBACK App::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         app->OnFolderEmptyCmd(msg);
+        return 0;
+    case WM_TRAYICON:
+        Tray_OnNotify(hwnd, lp);
         return 0;
     case WM_HOTKEY:
         WindowSnap_OnHotkey(static_cast<uint8_t>(wp), hwnd, app->fl_.hwnd);

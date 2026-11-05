@@ -1,6 +1,10 @@
 #include "tray_ui.h"
 
+#include <shellapi.h>
+
 #include <string>
+
+#include "resource.h"
 
 namespace {
 
@@ -26,7 +30,51 @@ bool WriteOrganizeVerb(const wchar_t* shellKey, const wchar_t* cmdKey, const wch
         RegWriteStr(HKEY_CURRENT_USER, cmdKey, nullptr, cmd.c_str());
 }
 
+constexpr UINT kTrayUid = 1;
+constexpr UINT kTrayExit = 1;
+
+NOTIFYICONDATAW MakeNid(HWND hwnd) {
+    NOTIFYICONDATAW nid{};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd = hwnd;
+    nid.uID = kTrayUid;
+    return nid;
+}
+
 }  // namespace
+
+bool Tray_Add(HWND hwnd, HINSTANCE inst) {
+    NOTIFYICONDATAW nid = MakeNid(hwnd);
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
+    if (!nid.hIcon) nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    lstrcpynW(nid.szTip, L"LiteDesk", ARRAYSIZE(nid.szTip));
+    return Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+}
+
+void Tray_Remove(HWND hwnd) {
+    NOTIFYICONDATAW nid = MakeNid(hwnd);
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+void Tray_OnNotify(HWND hwnd, LPARAM lp) {
+    if (lp != WM_RBUTTONUP && lp != WM_LBUTTONUP && lp != WM_CONTEXTMENU) return;
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+    AppendMenuW(menu, MF_STRING, kTrayExit, L"退出");
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd);
+    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+    if (cmd == kTrayExit) PostQuitMessage(0);
+}
+
+UINT Tray_TaskbarCreatedMsg() {
+    static UINT msg = RegisterWindowMessageW(L"TaskbarCreated");
+    return msg;
+}
 
 bool DesktopCtx_Register(const wchar_t* exePath) {
     if (!exePath || !exePath[0]) return false;

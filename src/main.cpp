@@ -108,7 +108,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
             else if (doOrganize) app.Organize();
             bool restoreOnExit = true;
             MSG m;
-            while (app.IsActive() && GetMessageW(&m, nullptr, 0, 0) > 0) {
+#ifdef LITEDESK_TESTING
+            const bool residentHotkeys = false;
+#else
+            // 不整理也留在消息循环里，否则 Ctrl+Shift 热键无人接收
+            const bool residentHotkeys = !doRestore || app.IsActive();
+#endif
+            while ((residentHotkeys || app.IsActive()) && GetMessageW(&m, nullptr, 0, 0) > 0) {
                 TranslateMessage(&m);
                 DispatchMessageW(&m);
                 if (app.TakeHiddenRestartRequest()) {
