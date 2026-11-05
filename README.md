@@ -2,7 +2,7 @@
 
 我自己用的一个 Windows 小工具。桌面上一堆文件、文件夹混在图标里，看着烦，就想一键把它们先收走，只留程序和快捷方式。
 
-顺便加了一组窗口吸附快捷键，平时把窗口贴到半屏、四角，不用来回拖。
+顺便加了一组窗口吸附快捷键，用法参考 Mac 上的 Magnet：把当前窗口贴到半屏、四角或者三分之一，不用来回拖。
 
 系统是 Windows 10 / 11 64 位。发布页里的 `LiteDesk.exe` 双击就能用，不用另装运行库：
 
@@ -31,7 +31,7 @@ https://github.com/XFSeven7/LiteDesk/releases
 
 ## 窗口快捷键
 
-程序开着就能用，修饰键是 **Ctrl+Shift**。作用在当前这个窗口上，贴的是它所在屏幕、避开任务栏的那一块。
+按键布局参考 Mac 上的 Magnet。那边是 Control+Option，这里改成 **Ctrl+Shift**，换屏幕和居中没做。程序开着就能用，作用在当前这个窗口上，贴的是它所在屏幕、避开任务栏的那一块。
 
 | 按键 | 效果 |
 |---|---|
@@ -49,14 +49,3 @@ https://github.com/XFSeven7/LiteDesk/releases
 收起来的东西不在回收站，而在桌面所在盘的 `LiteDesk\Parked`，比如桌面在 `G:\Desktop`，就是 `G:\LiteDesk\Parked`。和桌面同一块盘，搬家比较快。清单和日志在 `%AppData%\LiteDesk`。
 
 隐藏文件、`desktop.ini` 不会被收。桌面如果被 OneDrive 接管，移动时会跟着同步，有时会慢，或者失败。
-
-## 自己编译
-
-装好 Visual Studio 2022 的 C++ 桌面开发，再加 CMake。在项目目录里：
-
-```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
-```
-
-生成的程序在 `build\Release\LiteDesk.exe`。
