@@ -1,4 +1,4 @@
-# LiteDesk
+# <img src="assets/LiteDesk-simple.svg" width="32" height="32" alt=""> LiteDesk
 
 我自己用的一个 Windows 小工具。桌面上一堆文件、文件夹混在图标里，看着烦，就想一键把它们先收走，只留程序和快捷方式。
 
