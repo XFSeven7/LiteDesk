@@ -50,8 +50,9 @@ https://github.com/XFSeven7/LiteDesk/releases
 | Ctrl+Shift+T | 右 2/3 |
 | Ctrl+Shift+Enter | 最大化 |
 | Ctrl+Shift+Backspace | 回到吸附前的大小和位置 |
+| Ctrl+M | 最小化当前窗口；再按一次还原刚才那个 |
 
-这组键是全局的。LiteDesk 开着的时候，编辑器里用 Ctrl+Shift 加左右方向键按词选字会失效。
+这组键是全局的。LiteDesk 开着的时候，编辑器里用 Ctrl+Shift 加左右方向键按词选字会失效；Ctrl+M 也会占掉部分软件原来的快捷键。
 
 ## 占用
 

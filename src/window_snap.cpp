@@ -31,6 +31,10 @@ constexpr Hotkey kHotkeys[] = {
     {SnapSlot::Restore, VK_BACK},
 };
 
+// Ctrl+M：最小化 / 还原刚最小化的窗口（单独 id，不进 SnapSlot）
+constexpr int kHotIdMinToggle = 100;
+HWND g_lastMinimized = nullptr;
+
 struct Place {
     HWND hwnd = nullptr;
     RECT rc{};
@@ -121,6 +125,20 @@ void Apply(HWND hwnd, SnapSlot slot) {
     }
 }
 
+void ToggleMinimize(HWND self, HWND floatUi) {
+    if (g_lastMinimized && IsWindow(g_lastMinimized) && IsIconic(g_lastMinimized)) {
+        ShowWindow(g_lastMinimized, SW_RESTORE);
+        SetForegroundWindow(g_lastMinimized);
+        g_lastMinimized = nullptr;
+        return;
+    }
+    g_lastMinimized = nullptr;
+    HWND target = GetForegroundWindow();
+    if (!target || IsIconic(target) || IsShellOrSelf(target, self, floatUi)) return;
+    ShowWindow(target, SW_MINIMIZE);
+    g_lastMinimized = target;
+}
+
 }  // namespace
 
 RECT SnapWorkRect(RECT work, SnapSlot slot) {
@@ -161,6 +179,8 @@ void WindowSnap_Register(HWND owner) {
                             MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, hk.vk))
             failed = true;
     }
+    if (!RegisterHotKey(owner, kHotIdMinToggle, MOD_CONTROL | MOD_NOREPEAT, 'M'))
+        failed = true;
     if (failed) LogError(L"部分窗口吸附快捷键注册失败（可能已被占用）");
 #else
     (void)owner;
@@ -171,12 +191,18 @@ void WindowSnap_Unregister(HWND owner) {
 #ifndef LITEDESK_TESTING
     for (const Hotkey& hk : kHotkeys)
         UnregisterHotKey(owner, static_cast<int>(hk.slot));
+    UnregisterHotKey(owner, kHotIdMinToggle);
+    g_lastMinimized = nullptr;
 #else
     (void)owner;
 #endif
 }
 
 void WindowSnap_OnHotkey(uint8_t id, HWND self, HWND floatUi) {
+    if (id == static_cast<uint8_t>(kHotIdMinToggle)) {
+        ToggleMinimize(self, floatUi);
+        return;
+    }
     if (id < static_cast<uint8_t>(SnapSlot::Left) || id > static_cast<uint8_t>(SnapSlot::Restore))
         return;
     HWND target = GetForegroundWindow();
