@@ -48,7 +48,7 @@ https://github.com/XFSeven7/LiteDesk/releases
 | Ctrl+Shift+G | 右 1/3 |
 | Ctrl+Shift+E | 左 2/3 |
 | Ctrl+Shift+T | 右 2/3 |
-| Ctrl+Shift+Enter | 铺满 |
+| Ctrl+Shift+Enter | 最大化 |
 | Ctrl+Shift+Backspace | 回到吸附前的大小和位置 |
 
 这组键是全局的。LiteDesk 开着的时候，编辑器里用 Ctrl+Shift 加左右方向键按词选字会失效。

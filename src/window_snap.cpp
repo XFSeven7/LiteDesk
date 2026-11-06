@@ -86,6 +86,11 @@ void Apply(HWND hwnd, SnapSlot slot) {
     }
     const bool known = Find(hwnd) != nullptr;
     if (!known) Remember(hwnd);
+    // Enter：系统最大化（标题栏变还原），不是手动画满工作区
+    if (slot == SnapSlot::Maximize) {
+        ShowWindow(hwnd, SW_MAXIMIZE);
+        return;
+    }
     HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{sizeof(mi)};
     if (!GetMonitorInfoW(mon, &mi) || !MoveTo(hwnd, SnapWorkRect(mi.rcWork, slot))) {
