@@ -1,6 +1,10 @@
 #include "window_snap.h"
 
+#include <dwmapi.h>
+
 #include "util_log.h"
+
+#pragma comment(lib, "dwmapi.lib")
 
 namespace {
 
@@ -44,13 +48,21 @@ Place* Find(HWND hwnd) {
     return nullptr;
 }
 
+bool VisibleFrame(HWND hwnd, RECT* out) {
+    if (!out || !GetWindowRect(hwnd, out)) return false;
+    RECT frame{};
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame))))
+        *out = frame;
+    return true;
+}
+
 void Remember(HWND hwnd) {
     if (Find(hwnd)) return;
     Place& p = g_saved[g_next];
     g_next = static_cast<uint8_t>((g_next + 1) % kSavedCap);
     p.hwnd = hwnd;
     p.zoomed = IsZoomed(hwnd) != FALSE;
-    GetWindowRect(hwnd, &p.rc);
+    VisibleFrame(hwnd, &p.rc);  // 记可见外框，还原时才能贴齐
 }
 
 void Forget(HWND hwnd) {
@@ -67,12 +79,23 @@ bool IsShellOrSelf(HWND target, HWND self, HWND floatUi) {
            wcscmp(cls, L"Shell_TrayWnd") == 0 || wcscmp(cls, L"LiteDeskFloatPane") == 0;
 }
 
+// r 是希望「看得见」的外框；SetWindowPos 还要加上 DWM 隐形边，否则会留缝
 bool MoveTo(HWND hwnd, const RECT& r) {
     if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
-    const int w = r.right - r.left;
-    const int h = r.bottom - r.top;
+    RECT wr{}, vr{};
+    if (!GetWindowRect(hwnd, &wr)) return false;
+    vr = wr;
+    DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &vr, sizeof(vr));
+    const int padL = vr.left - wr.left;
+    const int padT = vr.top - wr.top;
+    const int padR = wr.right - vr.right;
+    const int padB = wr.bottom - vr.bottom;
+    const int x = r.left - padL;
+    const int y = r.top - padT;
+    const int w = (r.right - r.left) + padL + padR;
+    const int h = (r.bottom - r.top) + padT + padB;
     if (w <= 0 || h <= 0) return false;
-    return SetWindowPos(hwnd, nullptr, r.left, r.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
+    return SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE;
 }
 
 void Apply(HWND hwnd, SnapSlot slot) {
